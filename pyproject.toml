@@ -41,7 +41,21 @@ line-length = 88
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM", "PTH"]
+# `BLE` and `RUF100` are additions to the selection this code was reviewed
+# under, and they are here for the same reason as each other. This hook catches
+# broadly ON PURPOSE wherever a raise would escape, because an escaping raise is
+# a non-zero exit, which the harness reports as a non-blocking error before
+# running the command. Each such catch carries `# noqa: BLE001` to say the
+# breadth is deliberate. Without `BLE` selected the directives suppressed
+# nothing, so the file read as though blind-except were checked and waived while
+# nothing checked it, and a catch added later would have drawn no comment at
+# all. `RUF100` is what makes that failure loud: it is the rule that reports a
+# `noqa` guarding against a rule this project does not run.
+#
+# No count is given here on purpose. One was, and it was wrong within the same
+# change that wrote it -- the sites are in another file, so nothing brings a
+# number here back into agreement with them.
+select = ["E", "W", "F", "I", "B", "BLE", "C4", "UP", "ARG", "SIM", "PTH", "RUF100"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

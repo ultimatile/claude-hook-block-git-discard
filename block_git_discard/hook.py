@@ -77,11 +77,17 @@
 # patch) rather than hunk-level: hunk-level means `-p`, which wants a terminal
 # the denied caller does not have.
 #
-# FAIL-CLOSED, deliberately against the convention of every other hook here. The
-# others let malformed input through because being wrong costs a redo; this one
-# guards an irreversible loss. The guarantee has a floor worth stating: a hook
-# that exits non-zero is reported as a non-blocking error and the command then
-# runs, so every path after recognition must reach print() rather than raise.
+# FAIL-CLOSED, which is the unusual choice and the deliberate one. A PreToolUse
+# hook that cannot make sense of its input normally lets the command through:
+# being wrong that way costs a redo. This one guards a loss that no redo
+# reaches, so it refuses instead.
+#
+# The guarantee has a floor worth stating: a hook that exits non-zero is
+# reported as a non-blocking error and the command then runs, so every path
+# after recognition must reach print() rather than raise. That includes the
+# paths that DO the refusing -- `deny_unmeasured` carries its own handler for
+# exactly this, after a command holding one unencodable character raised inside
+# the override-token hash and turned a decided refusal into a discard.
 # Failures before main() -- import, syntax, an unusable interpreter -- cannot be
 # caught from inside this file at all.
 #
@@ -363,10 +369,20 @@ class Unmeasurable(Exception):
     """A recognized shape could not be measured.
 
     Reaching `main`'s handler it becomes a deny, unless the command already
-    carries that handler's own override token. Two callers catch it on purpose
-    before it gets there: `is_ref`, where a failed rev-parse IS the negative
-    answer rather than an error, and `hunk_headers`, where a per-file diff that
-    fails costs only that file's display line.
+    carries that handler's own override token. Three callers catch it on purpose
+    before it gets there, each because the failure it names is an ANSWER at that
+    site rather than a gap in one:
+
+    - `in_repository`, where a rev-parse that fails means there is no repository
+      here, which is the question being asked
+    - `is_ref`, where a failed rev-parse IS the negative answer
+    - `hunk_headers`, where a per-file diff that fails costs only that file's
+      display line, and the refusal it would otherwise cause has already been
+      decided on without it
+
+    Anywhere else, a catch would be turning "could not measure" into "nothing at
+    stake", which is the fail-open this class exists to prevent -- so a fourth
+    site is a change of policy, not a change of code.
     """
 
 
@@ -374,14 +390,14 @@ def git(cwd: str, *args: str) -> str:
     if not args or args[0] not in READ_ONLY:
         raise Unmeasurable(f"hook attempted a non-read-only git query: {args!r}")
     try:
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.run(
             # `core.quotepath=false` because git otherwise C-quotes any path
             # holding a non-ASCII byte: `é.txt` is reported as `"\303\251.txt"`.
             # That spelling reaches the reason as a name the reader cannot pass
             # back to git, and the untracked fingerprint stats it, misses, and
             # marks the file `gone` -- which pins the fingerprint to the file
             # SET and lets an override token outlive the content it described.
-            ["git", "-c", "core.quotepath=false", *args],  # noqa: S607
+            ["git", "-c", "core.quotepath=false", *args],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -704,21 +720,40 @@ def certainly_harmless(argv: list[str]) -> bool:
     opts, _ = split_at_ddash(args)
     flags = expand_flags([a for a in opts if a.startswith("-") and a != "--"])
 
-    if "p" in flags or "--patch" in flags:
+    if given(flags, "p", "--patch"):
         return True
     if verb == "clean":
-        return "n" in flags or "--dry-run" in flags
+        return given(flags, "n", "--dry-run")
     if verb == "reset":
         return "--hard" not in flags
     if verb == "restore":
-        staged = "S" in flags or "--staged" in flags
-        worktree = "W" in flags or "--worktree" in flags
+        staged = given(flags, "S", "--staged")
+        worktree = given(flags, "W", "--worktree")
         return staged and not worktree
     if verb == "switch":
         return not forced(flags)
     if verb == "checkout":
         return not forced(flags) and bool(flags & {"b", "B"})
     return False
+
+
+def given(flags: set[str], short: str, long: str) -> bool:
+    """Whether a flag is present, under either spelling git accepts for it.
+
+    Here for the reason `forced` is here, and with the same two callers:
+    `certainly_harmless` reading a form as safe while `stake_for` reads it as a
+    discard lets the discard past without ever being measured. Both spellings
+    were previously written out at every site, which is the arrangement
+    `forced`'s own docstring records having already drifted apart once -- one
+    branch had dropped a spelling, and nothing about the two sites made that
+    visible.
+
+    Note the asymmetry with `forced`, which keeps its own body: `--force` is not
+    a single long spelling but a set, because `switch` says `--discard-changes`
+    for the same thing. A flag whose spellings are one-to-one belongs here; one
+    whose long form is a set of synonyms does not fit and is better named.
+    """
+    return short in flags or long in flags
 
 
 def forced(flags: set[str]) -> bool:
@@ -846,7 +881,7 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
     flags = expand_flags([a for a in opts if a.startswith("-") and a != "--"])
 
     # Interactive forms pick hunks, so they never take collateral.
-    if "p" in flags or "--patch" in flags:
+    if given(flags, "p", "--patch"):
         return None
     if "--pathspec-from-file" in flags:
         raise Unmeasurable("pathspecs come from a file this hook cannot read")
@@ -878,8 +913,8 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
         return narrowed("worktree", paths) if paths is not None else None
 
     if verb == "restore":
-        staged = "S" in flags or "--staged" in flags
-        worktree = "W" in flags or "--worktree" in flags
+        staged = given(flags, "S", "--staged")
+        worktree = given(flags, "W", "--worktree")
         # `--staged` alone rewrites the index and leaves the file on disk, so the
         # content survives; only a worktree write can take it away.
         if staged and not worktree:
@@ -895,9 +930,9 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
         return ("worktree", [], False) if "--hard" in flags else None
 
     if verb == "clean":
-        if "n" in flags or "--dry-run" in flags:
+        if given(flags, "n", "--dry-run"):
             return None
-        if not (flags & {"f"} or "--force" in flags):
+        if not given(flags, "f", "--force"):
             return None
         ignored = "-ignored-only" if "X" in flags else "-all" if "x" in flags else ""
         # Without `-d`, clean does not descend into an untracked DIRECTORY: it
@@ -916,7 +951,7 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
         # which `over_wide` announces. Both spellings reach the test below:
         # expand_flags strips an attached value, so `--exclude=pat` reads as
         # `--exclude`.
-        if "e" in flags or "--exclude" in flags:
+        if given(flags, "e", "--exclude"):
             return widened(kind)
         paths = after_ddash if after_ddash is not None else operands(opts, set())
         return narrowed(kind, paths)
@@ -1248,6 +1283,23 @@ def stash_routes() -> str:
     return ", ".join(f"`{stash_form(k)}` for {what}" for k, what in STASH_ROUTES)
 
 
+# The way back from a stash, as a COMPLETE clause. Shared by the two messages
+# that offer a stash and end on the same promise; the worktree message makes a
+# different, joint claim covering `keep.patch` as well and writes its own.
+#
+# Complete, and that is the whole design note. Factored first as the bare
+# predicate `"keeps the entry if it cannot"`, on the reasoning that the sites did
+# not share a sentence -- which is true, and is exactly why a fragment was the
+# wrong unit: each site then had to supply the subject and verb the ellipsis was
+# written for, and two of three supplied the wrong ones. The emitted text read
+# "the stash keeps the entry if it cannot", with the subject moved off the pop it
+# describes, and "A pop that cannot place its entry keeps the entry if it
+# cannot", which says nothing at all. `stash_routes()` is the pattern that works:
+# shared text that arrives already grammatical, so a splice site cannot get it
+# wrong.
+POP_BACK = "`git stash pop` brings them back, and keeps the entry if it cannot"
+
+
 def operand(path: str) -> str:
     """A listed path in the spelling the routes below can actually be given.
 
@@ -1282,7 +1334,8 @@ def build_reason(
     hunks: list[str],
     token: str,
     root: str,
-    over_wide: bool,
+    narrowing_dropped: bool,
+    wider_than_reach: bool,
 ) -> str:
     what = (
         "untracked file(s)" if kind.startswith("untracked") else "uncommitted change(s)"
@@ -1307,16 +1360,31 @@ def build_reason(
             f"  ... and {len(names) - len(shown)} more; "
             f"`{listing_for(kind)}` lists them all"
         )
-    if over_wide:
-        # Said plainly, because the list is otherwise indistinguishable from a
-        # hook that measured the wrong thing. A reader who sees a file the
-        # command visibly does not name has two readings available -- over-wide
-        # report, or broken hook -- and only one of them is worth acting on.
+    # Said plainly, because the list is otherwise indistinguishable from a hook
+    # that measured the wrong thing. A reader who sees a file the command visibly
+    # does not name has two readings available -- over-wide report, or broken
+    # hook -- and only one of them is worth acting on.
+    #
+    # The two causes get their own sentences, and are not collapsed into one
+    # flag's worth of prose. They were: a single boolean printed the pathspec
+    # wording for both, so `mkdir -p d && cd d && git reset --hard` -- which
+    # carries no narrowing at all -- was told its narrowing had not been
+    # forwarded. Both can hold at once, so this is two `if`s and not an
+    # `elif`.
+    if narrowing_dropped:
         lines += [
             "",
             "The narrowing this command carries was not forwarded to the query",
             "behind this list, so the whole tree was measured: some of the files",
             "above may lie outside what it would actually reach.",
+        ]
+    if wider_than_reach:
+        lines += [
+            "",
+            "The directory this command moves to does not exist yet, so the",
+            "nearest one that does was measured instead. git resolves upwards,",
+            "so a command run in a directory this line creates still reaches",
+            "this tree -- but it may reach less of it than is listed above.",
         ]
     if kind == "worktree" and summary:
         lines += ["", summary]
@@ -1372,7 +1440,7 @@ def build_reason(
             "",
             "If this also moves the branch, the copy may not go back on cleanly.",
             "Neither route discards what it could not place: the stash entry is",
-            "kept and keep.patch stays where it was written.",
+            "kept, and keep.patch stays where it was written.",
         ]
     else:
         # The spelling comes from `stash_form`, and so does the reason it is THIS
@@ -1395,10 +1463,8 @@ def build_reason(
             "root named above (`cd` there first; the paths listed are relative",
             "to it):",
             f"  {stash_form(kind)} -- <path>...",
-            "      sets them aside; `git stash pop` brings them back, and keeps",
-            "      the entry if it cannot",
+            f"      sets them aside; {POP_BACK}",
         ]
-    # Only the token is echoed, never the command it came from. Echoing the whole
     lines += ["", *override(token)]
     return "\n".join(lines)
 
@@ -1427,6 +1493,10 @@ def override(token: str) -> list[str]:
 
 
 def emit_deny(reason: str) -> None:
+    # `json.dumps` escapes every non-ASCII code point, lone surrogates included,
+    # so what reaches `print` is pure ASCII and cannot fail to encode whatever
+    # the reason interpolated. That is why the encoding hazard this file guards
+    # against lives at the token hash and not here.
     print(
         json.dumps(
             {
@@ -1438,6 +1508,57 @@ def emit_deny(reason: str) -> None:
             }
         )
     )
+
+
+# The refusal of last resort, held as a constant because it interpolates
+# NOTHING: it is emitted exactly when composing a refusal out of the input is
+# what failed, so touching the input again is the one thing it must not do.
+LAST_RESORT = (
+    "Blocked: this command can discard uncommitted work, and the hook failed "
+    "while composing the refusal that would have said what is at stake.\n"
+    "\n"
+    "Denied rather than allowed, because the loss would be irreversible and "
+    "nothing here managed to measure it.\n"
+    "\n"
+    "No override token is offered. A token is derived from the command text, "
+    "and deriving one is among the steps that just failed -- so there is no "
+    "token to present, and re-running the line unchanged reaches this same "
+    "refusal.\n"
+    "\n"
+    # The way out has to be the one that actually exists on this path, and
+    # emptying the tree is NOT it: every route to this message refuses on the
+    # SHAPE of the command, before and without consulting what the tree holds,
+    # so a clean tree is refused here just the same. Saying otherwise sent the
+    # reader to do work that changes nothing and returns them to an identical
+    # refusal with no exit. What does change the outcome is giving the hook a
+    # command it can read.
+    "This refusal does not depend on what the tree holds, so committing or "
+    "stashing will not lift it. Re-issue the command in a form that can be "
+    "read instead: write the directory out rather than reaching it with "
+    "`popd`, a bare `cd`, or `cd -`; drop a `GIT_DIR` / `--work-tree` "
+    "override; split a compound line so the git call stands on its own. A "
+    "command the hook can follow gets a measured answer -- which names what "
+    "is at stake, and carries an override token if it still refuses."
+)
+
+
+def hashable(text: str) -> bytes:
+    """Bytes for the token hash, for ANY str the payload can carry.
+
+    The command arrives as JSON, and JSON can spell a lone surrogate (`\\ud800`)
+    that no UTF-8 encoder will take. A plain `.encode()` on one raises
+    `UnicodeEncodeError` -- and it raises INSIDE the refusal, after the decision
+    to deny is already made, so the hook exits non-zero and the harness runs the
+    command. A command carrying one unencodable character was a fail-open, on a
+    guard whose entire purpose is that there is no such thing.
+
+    `surrogatepass` is the encoder that takes them, and it is the right one for
+    the further reason that it stays INJECTIVE: `replace` would map every
+    unencodable command onto the same bytes, so an override minted for one
+    command would authorise a different one. A token that stops binding to its
+    command is not a smaller bug than the crash it fixed.
+    """
+    return text.encode("utf-8", "surrogatepass")
 
 
 def bound_to(command: str) -> str:
@@ -1466,8 +1587,21 @@ def clipped(text: str, limit: int = 400) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-def deny_unmeasured(command: str, why: str, posture: str) -> bool:
+def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
     """Refuse a covered shape that was not measured. False when already overridden.
+
+    Raises for no input the payload can carry, which is a guarantee and not an
+    observation: this function is the refusal, so a raise escaping it is a
+    non-zero exit, which the harness reports as a non-blocking error before
+    running the command. The handler at the end is what holds it.
+
+    Scoped to the input on purpose, rather than claimed absolutely. One raise
+    source survives the handler -- `emit_deny` writes to stdout, and a stdout
+    that has gone away raises `BrokenPipeError` from inside the handler itself.
+    Nothing here can answer that: the decision reaches the harness THROUGH
+    stdout, so with stdout gone a refusal and a crash are the same event, and
+    both end with the command running. It is left unhandled because handling it
+    would only make the guarantee read as broader than it is.
 
     Two callers reach this, and they fail in different places: a measurement that
     could not be taken, and a covered verb that was never read as a call at all.
@@ -1481,47 +1615,88 @@ def deny_unmeasured(command: str, why: str, posture: str) -> bool:
     at all, and some of what it catches -- a script being written, a line echoing
     a command -- destroys nothing. One sentence asserting irreversible loss for
     both would be false half the time it printed.
+
+    `cwd` is the payload's working directory, and it is the only place in this
+    message a reader can be sent that they could not have been expected to work
+    out for themselves. It is a starting point, not the tree at stake: the
+    message says which is which.
     """
-    token = hashlib.sha256(f"unmeasured\0{bound_to(command)}".encode()).hexdigest()[:16]
-    if token in set(ACK_RE.findall(command)):
-        return False
-    why = clipped(why)
-    emit_deny(
-        f"Blocked: {why}\n"
-        "\n"
-        f"{posture}\n"
-        "\n"
-        # `--ignored`, because a plain `git status` does not report an ignored
-        # file at all -- and the route right after this one asks the reader to
-        # decide whether the content IS ignored. Naming a command that cannot
-        # show them leaves that choice unmakeable from what this message gave.
+    try:
+        token = hashlib.sha256(
+            hashable(f"unmeasured\0{bound_to(command)}")
+        ).hexdigest()[:16]
+        if token in set(ACK_RE.findall(command)):
+            return False
+        why = clipped(why)
+        # WHERE to run the listing. This used to read "in the tree that command
+        # targets", on the reasoning that the caller holds the command that
+        # names it -- which covers a `GIT_DIR=` or a written-out `cd`, and fails
+        # exactly where this branch is reached most sharply. A `popd` returns to
+        # a directory only the shell's stack knows; the hook refused BECAUSE it
+        # could not settle which tree, and the caller reading this holds the same
+        # text and can settle it no better.
         #
-        # "in the tree that command targets" rather than a path, because these
-        # are exactly the refusals where the target is NOT the caller's cwd -- a
-        # `GIT_*` assignment, a relocated worktree, a `cd` that may not have run.
-        # No path is knowable here, but the caller holds the command that names
-        # it, so the extent can still be stated.
-        # `-uall` alongside it, because `git status` collapses an untracked
-        # directory to a single entry and the reader is being asked to decide
-        # what is worth keeping from the names it prints.
-        "Run `git status --short --ignored -uall` in the tree that command "
-        f"targets, and set aside anything worth keeping: {stash_routes()}, each "
-        "with `-- <path>...`.\n"
-        "\n"
-        # The way back, which this message used to leave unsaid while telling
-        # the reader to set content aside. The measured reason names it on every
-        # route; an obligation with no receiver is not a route.
-        "`git stash pop` brings any of them back, and keeps the entry if it "
-        "cannot.\n"
-        "\n" + "\n".join(override(token))
-    )
-    return True
+        # So the message anchors on the directory that IS knowable: where the
+        # shell stood when the harness handed this over. When even that is
+        # missing the anchor is DROPPED rather than printed empty -- one of the
+        # ways into this branch is a payload carrying no working directory, and
+        # that branch was rendering `The shell was in '' when this was checked`
+        # directly beneath its own reason saying the directory was never given.
+        where = (
+            f"The shell was in {operand(cwd)} when this was checked; if the line "
+            "moves from there (`cd`, `pushd`, `popd`, or a `GIT_DIR` / "
+            "`--work-tree` override) the tree at stake is wherever it lands, and "
+            "this hook could not follow it.\n\nIn that tree, run "
+            if cwd
+            else "This hook was given no directory to start from, so the tree at "
+            "stake has to come from the command itself. In it, run "
+        )
+        emit_deny(
+            f"Blocked: {why}\n"
+            "\n"
+            f"{posture}\n"
+            "\n"
+            + where
+            # The same spelling `listing_for` picks, and taken FROM it rather
+            # than written out again: which status flags reveal the content at
+            # stake is one rule, and a second copy here is free to drift from the
+            # one the measured messages print. Widest kind, because this branch
+            # measured nothing and so cannot rule out an ignored file.
+            + f"`{listing_for('untracked-all')}` and set aside anything worth "
+            f"keeping: {stash_routes()}, each with `-- <path>...`.\n"
+            "\n"
+            # The way back, which this message used to leave unsaid while
+            # telling the reader to set content aside. Said PER PUSH, because
+            # unlike the measured messages this one offers three spellings at
+            # once: a tree holding both a tracked change and an ignored file
+            # takes two pushes, and one pop then strands an entry.
+            f"Each push makes its own stash entry, so pop once per push: "
+            f"{POP_BACK}.\n"
+            "\n" + "\n".join(override(token))
+        )
+        return True
+    except BaseException:  # noqa: BLE001
+        # THE NET NEEDS A NET, and this is the net. Everywhere else a raise is
+        # caught and turned into a refusal; this function IS the refusal, so a
+        # fault here had nothing above it and escaped to a non-zero exit -- which
+        # the harness reports as a non-blocking error before running the command.
+        # The hook's own worst outcome, reached through its own safety path. It
+        # was live: a lone surrogate in the command text raised inside the token
+        # hash, and `git reset --hard` ran.
+        #
+        # A fixed string is the only refusal trustworthy here, because every
+        # ingredient of a composed one is implicated: the command that would not
+        # encode, the directory that could not be read, the token derived from
+        # either. `LAST_RESORT` interpolates none of them.
+        emit_deny(LAST_RESORT)
+        return True
 
 
 def main() -> None:
     # Before a destructive shape is recognized, anything unexpected is allowed
-    # through, matching the other hooks here. After recognition the polarity
-    # flips: see the header.
+    # through: a payload this hook cannot even parse is not evidence of a
+    # discard, and refusing on it would refuse every command the harness sends.
+    # After recognition the polarity flips: see the header.
     try:
         data = json.load(sys.stdin)
         command = data.get("tool_input", {}).get("command", "")
@@ -1587,7 +1762,6 @@ def main() -> None:
             if stake is None:
                 continue  # a covered verb, in a form that discards nothing
             kind, pathspecs, narrowing_dropped = stake
-            over_wide = narrowing_dropped or wider_than_reach
             names, summary, fingerprint = measure(cwd, kind, pathspecs)
             if not names:
                 continue  # nothing at stake; let it run
@@ -1598,7 +1772,7 @@ def main() -> None:
                     fingerprint,
                 ]
             )
-            token = hashlib.sha256(payload.encode()).hexdigest()[:16]
+            token = hashlib.sha256(hashable(payload)).hexdigest()[:16]
             # Every token on the line, not just the first: a line holding two
             # covered verbs needs one token each, and matching only the first
             # would leave the second block unable to ever see its own -- the
@@ -1612,7 +1786,18 @@ def main() -> None:
             # to `sub/sub/file`, matches nothing, exits 0 -- and the hunk list
             # silently empties with no error to notice.
             hunks = hunk_headers(root, names) if kind == "worktree" else []
-            emit_deny(build_reason(kind, names, summary, hunks, token, root, over_wide))
+            emit_deny(
+                build_reason(
+                    kind,
+                    names,
+                    summary,
+                    hunks,
+                    token,
+                    root,
+                    narrowing_dropped,
+                    wider_than_reach,
+                )
+            )
             return
         except BaseException as exc:  # noqa: BLE001
             # An unmeasurable case still needs an exit. Most of the ways this is
@@ -1620,10 +1805,26 @@ def main() -> None:
             # no directory -- produce the identical refusal on a re-run, so
             # without a token of its own a genuine intent to discard would have
             # nowhere to go.
+            #
+            # Interpolating `exc` runs an arbitrary `__str__`, and the f-string
+            # is built as an argument -- so it is evaluated in THIS frame, not
+            # inside the refusal's own handler. `deny_unmeasured` cannot catch
+            # what raised before it was entered, which is why the argument list
+            # sits inside a try of its own.
+            try:
+                why = (
+                    "this command can discard uncommitted work, and the hook "
+                    f"could not determine what is at stake ({exc})."
+                )
+            except BaseException:  # noqa: BLE001
+                why = (
+                    "this command can discard uncommitted work, and the hook "
+                    "could not determine what is at stake."
+                )
             if deny_unmeasured(
                 command,
-                "this command can discard uncommitted work, and the hook could "
-                f"not determine what is at stake ({exc}).",
+                payload_cwd,
+                why,
                 "Denied rather than allowed, because the loss would be irreversible.",
             ):
                 return
@@ -1644,9 +1845,19 @@ def main() -> None:
     # `git` that is merely NEAR a verb word -- `echo git reset --hard >> log` --
     # is refused. That is the cost of the guarantee, and it is a token, not a
     # loss.
-    if mentions(command) > recognized:
+    # `mentions` re-reads the raw command, so it can fail on the same input the
+    # parse above did -- and it is the LAST thing this hook does, with nothing
+    # after it to notice. A count that could not be taken is not a count of zero:
+    # it is one more covered verb this hook could not read, which is the exact
+    # condition this backstop refuses on.
+    try:
+        unread = mentions(command) > recognized
+    except BaseException:  # noqa: BLE001
+        unread = True
+    if unread:
         deny_unmeasured(
             command,
+            payload_cwd,
             "this command names a git verb that can discard uncommitted work, "
             "in a form the hook could not read as a call -- so what is at "
             "stake was never measured.",

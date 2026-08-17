@@ -86,6 +86,21 @@ def repo_holding_work(path: Path) -> Path:
     return r
 
 
+def clean_repo(path: Path) -> Path:
+    """A second repository with nothing uncommitted, built at `path`.
+
+    The clean twin of `repo_holding_work`, for the same question asked from the
+    other side. When a line can reach two repositories, an ALLOW only means
+    something if the repository the hook must not have measured holds nothing to
+    lose — otherwise the pass is equally explained by the hook having measured
+    the wrong tree and found it clean.
+    """
+    r = init(path)
+    (r / "k.txt").write_text("v\n")
+    commit_all(r)
+    return r
+
+
 # --- nothing at stake -------------------------------------------------------
 
 
@@ -1296,9 +1311,8 @@ def test_a_cd_confined_to_a_subshell_does_not_move_the_measurement(
     backgrounded command each get their own subshell the same way.
     """
     dirty(repo)  # the payload cwd has work at stake
-    other = init(tmp_path / "other")  # ... and the subshell's target does not
-    (other / "k.txt").write_text("v\n")
-    commit_all(other)
+    # ... and the subshell's target does not
+    other = clean_repo(tmp_path / "other")
     command = line.format(other=other) + "git reset --hard"
     denied = deny_reason(HOOK, command, payload_cwd=repo) is not None
     assert denied is not moves, command
@@ -1327,9 +1341,8 @@ def test_a_conditional_cd_is_followed_only_when_it_guards_the_git_call(
     that one instead.
     """
     dirty(repo)
-    other = init(tmp_path / "other")  # clean, so a pass would have to come from here
-    (other / "k.txt").write_text("v\n")
-    commit_all(other)
+    # clean, so a pass would have to come from here
+    other = clean_repo(tmp_path / "other")
     command = line.format(other=other) + "git reset --hard"
     assert (deny_reason(HOOK, command, payload_cwd=repo) is not None) is denied, command
 
@@ -1342,13 +1355,19 @@ def test_a_measurement_of_the_enclosing_repository_announces_itself(
     Whatever the line puts at the missing path may be a repository of its own,
     and then none of the parent's files are inside it. Printing them as the exact
     at-stake set reads as a hook that measured the wrong thing — the same reading
-    `over_wide` exists to foreclose everywhere else.
+    the over-wide caveats exist to foreclose everywhere else.
+
+    The caveat has to be the one about WHERE this was measured. This command
+    carries no pathspec, so the pathspec caveat would be announcing a narrowing
+    that was never written — which is how a single shared sentence for both
+    causes read before they were separated.
     """
     dirty(repo)
     command = "git clone -q https://example.invalid/x.git r && cd r && git reset --hard"
     reason = deny_reason(HOOK, command, payload_cwd=repo)
     assert reason is not None
-    assert "may lie outside" in reason, reason
+    assert "nearest one that does was measured" in reason, reason
+    assert "narrowing this command carries" not in reason, reason
 
 
 def test_an_ack_converges_wherever_it_is_written(
@@ -1682,9 +1701,7 @@ def test_a_tilde_resolves_the_same_way_in_both_spellings(
     home = tmp_path / "home"
     repo_holding_work(home / "myrepo")
     # Clean, so a deny cannot be coming from the directory the payload names.
-    elsewhere = init(tmp_path / "elsewhere")
-    (elsewhere / "k.txt").write_text("v\n")
-    commit_all(elsewhere)
+    elsewhere = clean_repo(tmp_path / "elsewhere")
     reason = deny_reason(HOOK, command, {"HOME": str(home)}, payload_cwd=elsewhere)
     assert reason is not None, command
     assert "a.txt" in reason, reason
@@ -2140,3 +2157,119 @@ def test_a_git_env_assignment_still_yields_to_a_harmless_form(
     up for it."""
     dirty(repo)
     assert deny_reason(HOOK, "GIT_DIR=/x git clean -n", payload_cwd=repo) is None
+
+
+# --- the refusal itself must not be able to fail ----------------------------
+#
+# Every test above asks what the hook decides. These ask whether it can SAY so.
+# A hook that exits non-zero is reported by the harness as a non-blocking error
+# and the command then runs, so a raise on the refusal path is not a crash --
+# it is a fail-open, and the one shape of fail-open the counting backstop above
+# cannot catch, because the count was already taken and already said "refuse".
+
+# Command text a payload can legally carry that the refusal has to survive. The
+# lone surrogate is not hypothetical: JSON can spell it, no UTF-8 encoder will
+# take it, and .encode() inside the override-token hash raised on it -- after
+# the decision to deny, so the discard ran.
+#
+# These name a covered call, so the answer is settled: refuse.
+HOSTILE_COVERED = [
+    pytest.param("git reset --hard \ud800", id="lone-surrogate-operand"),
+    pytest.param("git checkout -- \ud800", id="lone-surrogate-pathspec"),
+    pytest.param("sh -c 'git reset --hard' \ud800", id="lone-surrogate-past-backstop"),
+    pytest.param("git reset --hard \x00a.txt", id="nul-byte"),
+    pytest.param("git reset --hard " + "x" * 40000, id="very-long-operand"),
+    pytest.param("git reset --hard \x1b[2J\x07", id="control-characters"),
+]
+
+# These do not, and the distinction is the point rather than an omission: with
+# the surrogate glued to the verb the word is `\udcfeclean`, which is no more a
+# covered call than `git frobnicate` is -- git answers "not a git command" and
+# nothing is discarded. Allowing them is correct. What is still owed is that the
+# hook REACH that answer instead of raising on the way to it.
+HOSTILE_UNCOVERED = [
+    pytest.param("git \udcfeclean -fd", id="surrogate-glued-to-verb"),
+    pytest.param("git \ud800 reset --hard", id="surrogate-in-subcommand-position"),
+]
+
+
+@pytest.mark.parametrize("command", HOSTILE_COVERED)
+def test_a_refusal_survives_whatever_the_command_text_holds(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """Content is at stake and the answer must be a refusal, not an exit.
+
+    `deny_reason` asserts the exit code is 0 before it looks at the output, so
+    this pins both halves: the process ended cleanly AND it said deny. Before
+    the token hash learned to encode these, the first half failed.
+    """
+    dirty(repo)
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+@pytest.mark.parametrize("command", HOSTILE_COVERED + HOSTILE_UNCOVERED)
+def test_hostile_text_over_a_clean_tree_still_decides(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """The same inputs with nothing to lose. Which way each goes is not the
+    claim -- some reach the backstop and are refused on the text alone, others
+    name no covered call and pass. The claim is that a decision is reached at
+    all rather than raised past, which a non-zero exit fails before any
+    assertion about which way it went."""
+    deny_reason(HOOK, command, payload_cwd=repo)
+
+
+@pytest.mark.parametrize("command", HOSTILE_UNCOVERED)
+def test_unencodable_text_around_no_covered_call_still_decides(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """The dirty-tree half of the above. A tree with content at stake must not
+    turn a command naming no covered verb into an exit -- the encoding hazard is
+    in the command text, and the text is read before the verb is."""
+    dirty(repo)
+    deny_reason(HOOK, command, payload_cwd=repo)
+
+
+def test_an_override_still_binds_to_its_own_unencodable_command(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The token had to keep distinguishing commands the encoder cannot take.
+
+    Making the hash total by mapping every unencodable byte onto one replacement
+    would have closed the crash and opened something worse: two different
+    commands hashing alike, so an override minted for one authorises the other.
+    """
+    dirty(repo)
+    first = issue_token(deny_reason, repo, "git reset --hard \ud800")
+    second = issue_token(deny_reason, repo, "git reset --hard \ud801")
+    assert first != second
+
+
+def test_the_unmeasured_refusal_names_a_directory_the_reader_can_start_from(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`popd` is the case that made this necessary.
+
+    The message sends the reader to run `git status` in the tree at stake. For a
+    relocated worktree or a written-out `cd` the command text names it, but a
+    `popd` returns to a directory only the shell's stack knows -- and that is
+    precisely why the hook refused. Telling the reader to go somewhere neither
+    of them can identify is not an instruction, so the message names the one
+    directory that IS known and says it is a starting point.
+    """
+    reason = deny_reason(HOOK, "popd; git reset --hard", payload_cwd=repo)
+    assert reason is not None
+    assert str(repo) in reason, reason
+    assert "popd" in reason, reason
+
+
+def test_the_unmeasured_refusal_pops_once_per_push(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """This message offers three stash spellings at once, unlike the measured
+    ones which pick a single one from the kind they measured. A tree holding
+    both a tracked change and an ignored file takes two pushes, so a single
+    "pop brings them back" reads as one pop and leaves an entry stranded."""
+    reason = deny_reason(HOOK, "popd; git reset --hard", payload_cwd=repo)
+    assert reason is not None
+    assert "once per push" in reason, reason
