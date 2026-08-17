@@ -1,7 +1,3 @@
-#!/usr/bin/env -S uv run --no-project --script
-# /// script
-# requires-python = ">=3.11"
-# ///
 # PreToolUse hook: bounce a git command that would discard uncommitted work.
 #
 # `git checkout -- <file>` restores the file from the index, and takes every
@@ -125,13 +121,7 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-# A script's own directory is normally on sys.path, but not under
-# PYTHONSAFEPATH=1, where the sibling import below would raise. The harness
-# reports that as a non-blocking error and runs the command anyway, so a silently
-# disabled guard is the worst outcome. Put the directory back explicitly.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from shell_tokens import is_separator, tokenize  # noqa: E402
+from .shell_tokens import is_separator, tokenize
 
 # The override token, read from the RAW command string. It cannot be read from
 # the token list: the comment carrying it is stripped before tokenizing, so
@@ -1665,7 +1655,3 @@ def main() -> None:
             "it turns out to say. Refusing is the only answer that cannot be "
             "wrong in the expensive direction.",
         )
-
-
-if __name__ == "__main__":
-    main()

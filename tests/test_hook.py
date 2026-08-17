@@ -16,7 +16,9 @@ from pathlib import Path
 import pytest
 from conftest import HookRunner
 
-HOOK = "block-git-discard.py"
+# The console script `[project.scripts]` installs, which is what settings.json
+# invokes. `conftest` resolves it in this checkout's venv.
+HOOK = "block-git-discard"
 ACK = re.compile(r"ack:([0-9a-f]{16})")
 
 
@@ -894,7 +896,7 @@ def test_ack_is_read_from_the_raw_command_not_the_tokens(
     """shlex treats `#` as a comment and drops the rest of the line, so a
     token-based read would never see the ack and the override could never be
     exercised. This pins the raw-string read."""
-    from shell_tokens import tokenize
+    from block_git_discard.shell_tokens import tokenize
 
     assert "ack" not in " ".join(tokenize("git checkout -- a.txt # ack:abc"))
     dirty(repo)
