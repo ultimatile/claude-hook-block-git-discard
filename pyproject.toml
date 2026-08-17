@@ -32,6 +32,17 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["block_git_discard"]
 
+[tool.ruff]
+# Pinned rather than left to ruff's defaults, which resolve differently
+# depending on what config a contributor's machine happens to expose. This is
+# the same selection the hook was written and reviewed under in the tree it came
+# from, so the lint surface does not shift underneath it in the move.
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM", "PTH"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
