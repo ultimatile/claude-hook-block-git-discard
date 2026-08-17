@@ -1,0 +1,134 @@
+"""The handlers that turn an internal fault into a refusal instead of an exit.
+
+These paths cannot be reached by feeding the hook a bad command, because the one
+input known to reach them has been fixed -- which is exactly why they need tests
+of their own. A path reachable only by a bug nobody has found yet is a path that
+silently stops working.
+
+So the fault is injected: each test runs the real `main()` in a real subprocess
+with one internal broken on purpose, and asserts the process still exits 0 and
+still prints a deny. The subprocess is the point. In-process these faults would
+surface as test errors; through a process boundary they surface as what they
+actually are, since a hook that exits non-zero is reported by the harness as a
+non-blocking error and the command then runs.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+# Injected before `main()` runs. Each string is the body of the break, applied to
+# the imported module as `h`.
+BREAK_TOKEN = """
+def boom(*a, **k):
+    raise RuntimeError("injected: token derivation")
+h.bound_to = boom
+"""
+
+BREAK_MENTIONS = """
+def boom(*a, **k):
+    raise RuntimeError("injected: backstop count")
+h.mentions = boom
+"""
+
+BREAK_EXC_STR = """
+class Unprintable(Exception):
+    def __str__(self):
+        raise RuntimeError("injected: exception rendering")
+def boom(*a, **k):
+    raise Unprintable()
+h.measure = boom
+"""
+
+
+def run_broken(break_src: str, command: str, cwd: Path) -> tuple[int, str]:
+    """Run `main()` with one internal broken; return (exit code, stdout)."""
+    script = (
+        "import sys\nimport block_git_discard.hook as h\n" + break_src + "h.main()\n"
+    )
+    payload = json.dumps({"tool_input": {"command": command}, "cwd": str(cwd)})
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, proc.stdout
+
+
+def decision(stdout: str) -> str | None:
+    if not stdout.strip():
+        return None
+    return json.loads(stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+@pytest.fixture
+def dirty_repo(tmp_path: Path) -> Path:
+    """A repository with a tracked change in it -- something to actually lose."""
+    r = tmp_path / "r"
+    r.mkdir()
+    for args in (
+        ("init", "-q"),
+        ("config", "user.email", "t@t"),
+        ("config", "user.name", "t"),
+    ):
+        subprocess.run(["git", *args], cwd=r, check=True, capture_output=True)
+    (r / "a.txt").write_text("v1\n")
+    subprocess.run(["git", "add", "-A"], cwd=r, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "c1"], cwd=r, check=True, capture_output=True
+    )
+    (r / "a.txt").write_text("DIRTY\n")
+    return r
+
+
+def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
+    """Deriving the override token is inside the refusal, so a fault there used
+    to escape the refusal entirely. It is what a lone surrogate in the command
+    text did, and the tree was destroyed on the way past."""
+    code, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
+    assert code == 0, out
+    reason = decision(out)
+    assert reason is not None
+    assert "failed" in reason and "composing the refusal" in reason, reason
+
+
+def test_the_last_resort_offers_no_token_it_could_not_derive(
+    dirty_repo: Path,
+) -> None:
+    """An override token is a hash of the command, and the hash is what broke.
+    Printing one anyway would hand back a token that never matches, leaving a
+    refusal with an exit that does not work."""
+    _, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
+    reason = decision(out)
+    assert reason is not None
+    assert "No override token is offered" in reason, reason
+    assert "ack:" not in reason, reason
+
+
+def test_a_broken_backstop_count_refuses_rather_than_passes(dirty_repo: Path) -> None:
+    """The count is the last thing the hook does and nothing follows it, so a
+    fault there is silence -- which reaches the harness as consent. A count that
+    could not be taken is not a count of zero."""
+    code, out = run_broken(BREAK_MENTIONS, "sh -c 'git reset --hard'", dirty_repo)
+    assert code == 0, out
+    assert decision(out) is not None, out
+
+
+def test_an_exception_that_cannot_be_rendered_still_refuses(
+    dirty_repo: Path,
+) -> None:
+    """The unmeasured reason interpolates the failure, which runs an arbitrary
+    `__str__`. That happens while building the argument, so it is outside the
+    refusal's own handler and needs one of its own."""
+    code, out = run_broken(BREAK_EXC_STR, "git reset --hard", dirty_repo)
+    assert code == 0, out
+    reason = decision(out)
+    assert reason is not None
+    assert "could not determine what is at stake" in reason, reason
