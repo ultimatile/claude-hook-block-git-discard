@@ -1302,6 +1302,68 @@ def test_a_cd_confined_to_a_subshell_does_not_move_the_measurement(
     assert denied is not moves, command
 
 
+@pytest.mark.parametrize(
+    ("line", "denied"),
+    [
+        # The `cd` may not run, and a later separator reaches the git call
+        # anyway — so it lands either there or here, and here holds work.
+        ("test -d nowhere && cd {other}; ", True),
+        ("false && cd {other}; ", True),
+        # Same condition guarding both: the only branch where the git call runs
+        # is the one where the `cd` did.
+        ("mkdir -p {other} && cd {other} && ", False),
+    ],
+)
+def test_a_conditional_cd_is_followed_only_when_it_guards_the_git_call(
+    deny_reason: HookRunner, repo: Path, tmp_path: Path, line: str, denied: bool
+) -> None:
+    """`&&` makes a `cd` conditional exactly as `||` does.
+
+    Applying it regardless measured a directory the shell may never have entered:
+    `test -d dist && cd dist; git reset --hard` was answered from `dist` — clean,
+    so allowed — while the shell, having never left the payload's tree, reset
+    that one instead.
+    """
+    dirty(repo)
+    other = init(tmp_path / "other")  # clean, so a pass would have to come from here
+    (other / "k.txt").write_text("v\n")
+    commit_all(other)
+    command = line.format(other=other) + "git reset --hard"
+    assert (deny_reason(HOOK, command, payload_cwd=repo) is not None) is denied, command
+
+
+def test_a_measurement_of_the_enclosing_repository_announces_itself(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The ancestor fallback measures a tree the command may not reach at all.
+
+    Whatever the line puts at the missing path may be a repository of its own,
+    and then none of the parent's files are inside it. Printing them as the exact
+    at-stake set reads as a hook that measured the wrong thing — the same reading
+    `over_wide` exists to foreclose everywhere else.
+    """
+    dirty(repo)
+    command = "git clone -q https://example.invalid/x.git r && cd r && git reset --hard"
+    reason = deny_reason(HOOK, command, payload_cwd=repo)
+    assert reason is not None
+    assert "may lie outside" in reason, reason
+
+
+def test_an_ack_converges_wherever_it_is_written(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """Removing the ack leaves the whitespace it sat beside, and the token is a
+    hash of what is left — so an ack written anywhere but the very end shifted
+    the base and minted a fresh token every retry. An override that never
+    converges is a refusal with no way through."""
+    dirty(repo)
+    command = "git checkout -- a.txt\ngit status"
+    token = issue_token(deny_reason, repo, command)
+    # Appended to the offending line rather than to the end of the whole thing.
+    acked = f"git checkout -- a.txt # ack:{token}\ngit status"
+    assert deny_reason(HOOK, acked, payload_cwd=repo) is None, acked
+
+
 def test_popd_denies(deny_reason: HookRunner, repo: Path) -> None:
     """Where `popd` lands is held in the shell's own directory stack, which the
     payload does not carry."""
@@ -1376,14 +1438,51 @@ def test_an_abbreviated_long_option_still_reads_as_the_option_it_names(
         "git checkout --patc -- a.txt",
     ],
 )
-def test_an_abbreviated_harmless_option_still_passes(
+def test_an_abbreviated_harmless_option_is_refused(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
-    """Reading abbreviations only for the destructive flags would refuse these,
-    which destroy nothing."""
+    """Abbreviations expand toward the destructive flags only.
+
+    They expand against a union over all five verbs rather than any verb's real
+    option table, so an abbreviation can name a flag the verb does not have.
+    Toward a destructive flag that only adds a refusal; toward a harmless one it
+    cancels the measurement — `git switch --p -f other` was read as `--patch`,
+    which `switch` has no such thing as, and left unmeasured while git resolved
+    `--p` to `--progress` and discarded the tree. So the harmless side takes its
+    full spelling, and these three cost a token.
+    """
+    dirty(repo)
+    (repo / "u.txt").write_text("untracked\n")
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git clean --dry-run -f",
+        "git restore --staged a.txt",
+        "git checkout --patch -- a.txt",
+    ],
+)
+def test_a_fully_spelled_harmless_option_still_passes(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """The other half: spelled out, they are read and they pass."""
     dirty(repo)
     (repo / "u.txt").write_text("untracked\n")
     assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
+
+
+@pytest.mark.parametrize(
+    "command", ["git switch --p -f other", "git switch --p --discard-changes other"]
+)
+def test_an_abbreviation_naming_a_flag_the_verb_lacks_is_measured(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """`switch` has no `--patch`; git resolves `--p` to `--progress` and, with
+    `-f`, discards. Both shapes were run for real and reverted the tree."""
+    dirty(repo)
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
 
 
 # --- what a forced checkout actually reaches --------------------------------
@@ -1431,20 +1530,48 @@ def test_a_forced_branch_creation_is_measured_whole(
         "tar xf repo.tar",
     ],
 )
-def test_a_directory_this_line_creates_is_left_alone(
-    deny_reason: HookRunner, repo: Path, creator: str
+def test_a_directory_this_line_creates_outside_a_repository_is_left_alone(
+    deny_reason: HookRunner, tmp_path: Path, creator: str
 ) -> None:
     """A path holding nothing when the hook decides can only come to hold what
     the rest of the line puts there, which is not content this hook was ever
-    protecting.
+    protecting — provided nothing ABOVE it is a repository either.
 
     Parametrized over unrelated producers to pin the contract that the reading
     does NOT come from recognizing them: that set has no boundary, and a rule
     built on it would refuse whichever spelling had not been listed yet.
     """
-    dirty(repo)  # so passing cannot be an artefact of an empty payload directory
-    command = f"{creator} && cd repo && git checkout other"
-    assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
+    workspace = tmp_path / "workspace"  # an ordinary directory, no repository
+    workspace.mkdir()
+    command = f"{creator} && cd repo && git reset --hard"
+    assert deny_reason(HOOK, command, payload_cwd=workspace) is None, command
+
+
+@pytest.mark.parametrize(
+    "creator", ["mkdir -p d", "git clone -q URL d", "tar xf d.tar"]
+)
+def test_a_directory_this_line_creates_inside_a_repository_is_measured(
+    deny_reason: HookRunner, repo: Path, creator: str
+) -> None:
+    """ "This path holds nothing" is about the path ALONE, and git resolves
+    upwards.
+
+    A command run in a directory this line creates still reaches the repository
+    above it, whose content long predates the line: `mkdir -p d && cd d && git
+    reset --hard` was allowed on that reading and destroyed the enclosing tree.
+    So the measurement falls back to the nearest directory that already exists,
+    and passes only when that one is in no repository either.
+
+    The cost is a refusal when a clone lands INSIDE a dirty repository, since
+    nothing here can tell in advance whether the new directory will be a
+    repository root of its own. That is the safe direction of a distinction the
+    hook cannot make.
+    """
+    dirty(repo)
+    command = f"{creator} && cd d && git reset --hard"
+    reason = deny_reason(HOOK, command, payload_cwd=repo)
+    assert reason is not None, command
+    assert "a.txt" in reason, reason
 
 
 def test_the_two_spellings_of_a_branch_switch_agree(
@@ -1919,11 +2046,14 @@ def test_a_deletion_beside_a_real_change_still_names_the_change(
 @pytest.mark.parametrize(
     ("command", "listing"),
     [
-        ("git clean -fd", "`git status --short` lists them all"),
-        # `-x` and `-X` reach ignored files, which a plain `git status` does not
-        # report at all — for `clean -fX` it would show NONE of what the cap
-        # stands in for.
-        ("git clean -fdx", "`git status --short --ignored` lists them all"),
+        # `-uall`, because `git status` otherwise COLLAPSES an untracked
+        # directory to one entry: over 60 files under `bigdir/` it prints
+        # `?? bigdir/` and nothing else, which is not "lists them all".
+        ("git clean -fd", "`git status --short -uall` lists them all"),
+        # `--ignored` too, because a plain `git status` does not report an
+        # ignored file at all — for `clean -fX` it would show NONE of them.
+        ("git clean -fdx", "`git status --short --ignored -uall` lists them all"),
+        # Tracked changes are never collapsed, so the worktree kind needs neither.
         ("git checkout -- .", "`git status --short` lists them all"),
     ],
 )
