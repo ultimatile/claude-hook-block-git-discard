@@ -91,31 +91,35 @@
 # Failures before main() -- import, syntax, an unusable interpreter -- cannot be
 # caught from inside this file at all.
 #
-# THE PARSE FAILS CLOSED TOO, which is the part that took three review rounds to
-# arrive at. Measurement failures were refused from the start; RECOGNITION
-# failures were not, and a covered verb this hook could not read as a call was
-# indistinguishable from a shape it does not cover -- so it passed, silently.
-# Every parser gap found here surfaced that way, each a different mistake with
-# one signature: a covered verb in the text with no recognized call to account
-# for it. `main` counts the two and refuses when they disagree.
+# THE PARSE FAILS CLOSED TOO, and that half is the harder one. A MEASUREMENT
+# failure is loud: the hook knows which call it could not answer for. A
+# RECOGNITION failure is silent -- a covered verb this hook cannot read as a call
+# is indistinguishable from a shape it does not cover, and silence reaches the
+# caller as permission. Every parser gap has that one signature, whatever the
+# underlying mistake: a covered verb in the text with no recognized call to
+# account for it. `main` counts the two and refuses when they disagree.
 #
 # That test is why the shell parsing here stays shallow. A here-document body is
 # read as ordinary commands and a script that merely writes one is refused; so is
 # `echo git reset --hard >> log`, `man git checkout`, `docker run IMG git clean
 # -fdx`, and a commit message that spells `git <verb>` inside its quotes. Every
 # one of those is `git` beside a covered verb with no call read from it, which is
-# also the exact signature of a parse gap -- telling them apart is the parsing
-# that kept going wrong. The refusals cost an override token.
+# also the exact signature of a parse gap. Telling the two apart is precisely the
+# parsing this hook declines to attempt. The refusals cost an override token.
 #
-# The backstop's own floor: it reads a covered call out of the WORDS, so both
-# halves have to be there as words. A command whose NAME resolves to `git` only
-# at run time -- `$GIT reset --hard`, `$(echo git) reset --hard` -- and a VERB
-# that does the same, which is what a `git co` alias is, are invisible to both
-# parsers alike. Resolving either means reading the environment or the config the
-# command will run under, and this hook reads neither. So "never under-refuse" is
-# not a guarantee it can make; what it holds to is narrower and true: no shape it
-# can READ is under-refused, and a shape it cannot read is refused rather than
-# passed.
+# The backstop's own floor: both halves of the call have to be WRITTEN in the
+# text. The name is read off the characters around it, so it need not be a word
+# of its own -- `x=$(git reset --hard)` and `cat <(git reset --hard)` are read.
+# The verb still has to arrive as a word. What stays out of reach is a name that
+# is NOWHERE in the text -- `$GIT reset --hard`, `${GIT} clean -fdx` -- and a
+# VERB that is the same, which is what a `git co` alias is: both are invisible to
+# both parsers alike, because resolving either means reading the environment or
+# the config the command will run under, and this hook reads neither.
+# `$(echo git) reset --hard` is NOT one of them: the word `git` is written down,
+# so it is read and the line is refused.
+# So "never under-refuse" is not a guarantee it can make; what it holds to is
+# narrower and true: no shape it can READ is under-refused, and a shape it cannot
+# read is refused rather than passed.
 
 from __future__ import annotations
 
@@ -140,7 +144,7 @@ ACK_RE = re.compile(r"#\s*ack:([0-9a-f]{16})\b")
 # that as a command boundary, and `git checkout \` + newline + `-- a.txt` arrives
 # as `git checkout` with the pathspec dropped -- a whole-tree discard measured as
 # a narrowed one, which is to say allowed.
-CONTINUATION = re.compile(r"\\\r?\n")
+CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\r?\n")
 
 # A command substitution, innermost first. The tokenizer treats `(` and `)` as
 # separators, so `git -C $(git rev-parse --show-toplevel) reset --hard` arrives
@@ -150,10 +154,54 @@ CONTINUATION = re.compile(r"\\\r?\n")
 # takes it from there.
 SUBSTITUTION = re.compile(r"\$\([^()]*\)|`[^`]*`")
 
-# Characters that glue to a word without being part of it. Stripped for the
-# mention test only, so a quoted payload (`sh -c 'git reset --hard'`) is read as
-# the words it holds rather than as opaque text.
-CLINGING = "'\"()$`"
+# Characters that glue to a word without being part of it. Stripped off the ends
+# of the words FOLLOWING a command name in `mentions`, and what it buys is narrow
+# and worth naming exactly: it is the VERB abutting a closer. `sh -c 'git reset'`
+# and `x=$(git reset)` present the verb as `reset'` and `reset)`, and neither is
+# the word `reset` until the closer comes off. The same payloads with an option
+# after the verb (`sh -c 'git reset --hard'`) need none of this, because the
+# closer lands on the option instead.
+#
+# The command name needs none of it either: `COMMAND_GIT` below finds the name by
+# its neighbours rather than by reducing a word to it.
+CLINGING = "'\"()$`\\"
+
+# Characters that may appear inside a command NAME. `COMMAND_GIT` reads a `git`
+# as a name when neither neighbour is one of these, so the name does not have to
+# arrive as a whole word -- which is the difference that matters, because
+# `x=$(git`, `a$(git` and `<(git` all carry a command name that no amount of
+# stripping the ENDS of a word reduces to `git`. Each of those lines discards a
+# worktree, and is a line this hook refuses on the strength of this class alone.
+#
+# The class is spelled from what a name MAY hold rather than from the separators
+# that end one, and that direction is the whole point. A separator missing from
+# such a list would leave a `git` glued to what precedes it and invisible here --
+# a call that runs unmeasured. A name character missing from THIS list splits a
+# word that should have stayed whole, and costs one refusal. The cheap mistake is
+# the one to be exposed to.
+NAME_CHAR = r"A-Za-z0-9_.+\-"
+
+# `/` is treated differently on the two sides, and that asymmetry IS the basename
+# rule -- the same one `PurePosixPath(...).name` states, spelled as neighbours.
+# A `/` in front means the name is path-qualified, so `/usr/bin/git` is still the
+# git this hook covers --
+# the guard on the left lets it through. A `/` behind means the `git` is a
+# DIRECTORY component and the name is something else, so `git/lfs` and `a/git/b`
+# are not read as `git`, exactly as their basenames are not.
+#
+# The other exclusions come from `NAME_CHAR` on the side the character sits:
+# `git-lfs` and `gitk` from the right, `foo.git` and `.gitignore` from the left.
+COMMAND_GIT = re.compile(rf"(?<![{NAME_CHAR}])git(?![{NAME_CHAR}/])")
+
+# Characters that end the simple command an inert-subcommand guard belonged to.
+# Spelled once because `mentions` reads it at two points -- clearing the guard,
+# and bounding the look-ahead -- and two copies drift.
+SEPARATORS = ";&|()`"
+
+# The end of the whitespace token a candidate sits in. `mentions` needs it
+# because a separator BEHIND the name in the same word still ends the previous
+# command, and a scan that stops at the name would not have seen it.
+WHITESPACE = re.compile(r"\s")
 
 # The file-descriptor number in front of a redirection, and ONLY when it is
 # written against the operator. Adjacency is the whole signal, and it survives
@@ -187,20 +235,21 @@ def prepared(command: str, *, mask: bool = True) -> str:
 
     `mask` collapses command substitutions, and only the tokenizing path wants
     it. The contents of a substitution ARE executed, so hiding them from the
-    mention test is backwards: `echo $(git reset --hard)` was allowed by exactly
-    that, and it discards the tree. The mention test splits on whitespace and
-    peels the characters that cling to a word, so `$(git` gives up its `git`
-    without any masking at all -- it needs none of the protection the tokenizer
-    needs, and pays none of its cost.
+    mention test is backwards: `echo $(git reset --hard)` discards the tree, and
+    masking is the one thing that could hide it. The mention test reads a name off the
+    characters around it rather than off word boundaries, so the `git` inside
+    `$(...)`, `` `...` `` or `<(...)` is there to be found whether or not the
+    bracket begins a word -- it needs none of the protection the tokenizer needs,
+    and pays none of its cost.
     """
     # Comments come off BEFORE lines are joined, because a backslash inside a
     # comment is ordinary text to the shell -- `echo one # note \` / `echo two`
-    # prints both, verified in bash and zsh. Joining first makes the second line
-    # part of the comment and deletes it, so `git log -1 # note \` followed by
-    # `git reset --hard` reached the hook as one commented-out line and was
-    # allowed while the reset ran.
+    # prints both, verified in bash and zsh. Joining first would make the second
+    # line part of the comment and delete it, so `git log -1 # note \` followed by
+    # `git reset --hard` would arrive as one commented-out line -- nothing left to
+    # read, and a reset that still runs.
     command = strip_comments(command)
-    command = CONTINUATION.sub(" ", command)
+    command = CONTINUATION.sub(r"\1 ", command)
     if mask:
         previous = ""
         while previous != command:
@@ -222,16 +271,49 @@ def logical_lines(text: str) -> list[str]:
     out: list[str] = []
     current: list[str] = []
     quote = ""
+    # `$'...'` is ANSI-C quoting, where a backslash escapes as it does outside
+    # quotes -- so `$'don\'t'` is ONE word and the quote closes at its end. Read
+    # as an ordinary single quote the `\'` closes it instead and the `'` after
+    # `t` opens a new one, so the quote spans the newline and the next line joins
+    # the argument list of the call above it. When that call is inert, its guard
+    # travels with it and swallows whatever verb the next line runs.
+    ansi_c = False
+    # The previous character was a `$` that was neither quoted nor escaped, which
+    # is the only thing that turns the `'` after it into ANSI-C quoting.
+    dollar = False
+    escaped = False
     for ch in text:
+        if escaped:
+            escaped = False
+            dollar = False
+            current.append(ch)
+            continue
+        # A backslash escapes the next character everywhere EXCEPT inside single
+        # quotes, where the shell takes it literally. Without this arm, `-m
+        # don\'t` reads the `\'` as an opening quote that never closes, so the
+        # newline after it stops ending the command and the following line merges
+        # into the `commit` argument -- carrying the INERT_SUBCOMMANDS guard with
+        # it. `git commit -m don\'t` + newline + `sh -c 'git clean -fdx'` and the
+        # `-m "don't"` spelling of the same message are the same command; this
+        # arm is what makes the hook decide them the same way.
+        if (quote != "'" or ansi_c) and ch == "\\":
+            escaped = True
+            dollar = False
+            current.append(ch)
+            continue
         if quote:
             if ch == quote:
                 quote = ""
+                ansi_c = False
         elif ch in "'\"":
             quote = ch
+            ansi_c = ch == "'" and dollar
         elif ch == "\n":
             out.append("".join(current))
             current = []
+            dollar = False
             continue
+        dollar = ch == "$" and not quote
         current.append(ch)
     out.append("".join(current))
     return out
@@ -240,17 +322,26 @@ def logical_lines(text: str) -> list[str]:
 def mentions(command: str) -> int:
     """Covered calls the raw text names, read as crudely as this hook can manage.
 
-    Deliberately a SECOND parser, and a dumber one. It splits on whitespace and
-    strips the characters that cling to a word, so the things that made the real
-    parse lose a verb -- a `(` the tokenizer reads as a separator, a
-    here-document delimiter, a payload sitting inside `sh -c '...'` -- have no
-    purchase on it. Compared in `main` against what that parse recognized, a
-    shortfall is a covered verb nothing accounted for.
+    Deliberately a SECOND parser, and a dumber one. It reads the raw text, so the
+    things that made the real parse lose a verb -- a `(` the tokenizer reads as a
+    separator, a here-document delimiter, a payload sitting inside `sh -c '...'`
+    -- have no purchase on it. Compared in `main` against what that parse
+    recognized, a shortfall is a covered verb nothing accounted for.
 
-    It reads the verb in SUBCOMMAND position rather than anywhere in the line.
-    Anywhere-in-the-line refuses `git bisect reset`, `git log -S clean` and
-    `git tag -d checkout`, none of which discards anything, and all of which an
-    agent types.
+    THE NAME IS FOUND BY ITS NEIGHBOURS, not by reducing a word to it. That is
+    what lets it read a name buried mid-word: `x=$(git reset --hard)`,
+    `export OUT=$(git clean -fdx)` and `cat <(git reset --hard)` each take a
+    worktree and each carry a `git` that no reduction of a whitespace word
+    reaches, since one character in front of the `$(` is enough to stop it. The
+    real parse masks the substitution away and recognizes nothing in them either,
+    so this counter is the only one that can see them at all -- and a scan over
+    character positions has no word to be defeated by.
+
+    It reads the verb in SUBCOMMAND position rather than anywhere in the line, so
+    `git log -S clean` and `git tag -d checkout` are not counted; neither
+    discards anything and an agent types both. The look-ahead below is the
+    exception, and it does count `git bisect reset` -- an over-refusal taken
+    knowingly, for the reason given there.
 
     And a `git` standing in the ARGUMENTS of a git call that does not run its
     arguments is skipped: see `INERT_SUBCOMMANDS`.
@@ -258,33 +349,68 @@ def mentions(command: str) -> int:
     found = 0
     # LINE BY LINE, because a newline ends a command as surely as a `;` does and,
     # being whitespace, never survives into a word for the separator test below
-    # to find. Carried across lines, one `git log -1` on the line above disarmed
-    # the guard for everything after it -- `git commit -m "wip"` then
-    # `sh -c 'git reset --hard'` was allowed, and destroyed the tree.
+    # to find. Carried across lines, one `git log -1` above would disarm the guard
+    # for everything after it, and `git commit -m "wip"` followed by
+    # `sh -c 'git reset --hard'` would go uncounted while the reset runs.
     for line in logical_lines(prepared(command, mask=False)):
         inert = ""
-        raws = line.split()
-        words = [w.strip(CLINGING) for w in raws]
-        for i, raw in enumerate(raws):
+        previous = 0
+        for candidate in COMMAND_GIT.finditer(line):
+            start = candidate.start()
             # A separator ends the call the guard belonged to. So does a
             # substitution or a subshell, for a different reason: what is written
             # inside one RUNS, so `git commit -am "$(git reset --hard)"` discards
-            # the tree before the commit it is quoted into has begun. The bracket
-            # is read off the raw word, since stripping is what would take the
-            # evidence away.
-            if any(ch in raw for ch in ";&|()`"):
+            # the tree before the commit it is quoted into has begun.
+            #
+            # The evidence is the SPAN since the last candidate, because neither
+            # name need be a whole word. It runs to the end of this candidate's
+            # own token rather than to the name, so a separator sitting BEHIND the
+            # name in the same word still clears the guard: `git log -1 git)`
+            # followed by a covered verb is two commands, and the `)` is the only
+            # thing that says so.
+            edge = WHITESPACE.search(line, start)
+            through = edge.start() if edge else len(line)
+            if any(ch in line[previous:through] for ch in SEPARATORS):
                 inert = ""
-            if PurePosixPath(words[i]).name != "git":
-                continue
+            previous = candidate.end()
             if inert:
                 continue  # an argument of `git <inert>`, not a call of its own
-            _, rest, _ = strip_global_opts(words[i + 1 :])
+            # From the name onwards, so the word it may be buried in contributes
+            # only what follows the name. Its own remainder is dropped with it.
+            raws = line[start:].split()[1:]
+            words = [w.strip(CLINGING) for w in raws]
+            _, rest, _ = strip_global_opts(words)
             if not rest:
                 continue
             if rest[0] in COVERED:
                 found += 1
             elif rest[0] in INERT_SUBCOMMANDS:
                 inert = rest[0]
+            else:
+                # The subcommand position holds a word that is neither, which
+                # means this crude split has LOST the boundary rather than found
+                # a subcommand nothing here covers. Splitting on whitespace tears
+                # a quoted option value in two -- `-c user.name="John Doe"`
+                # becomes `-c`, `user.name="John`, `Doe"` -- and `-c` consumes
+                # only the first half, so the verb after it lands one position
+                # further along than the subcommand test looks. On `git -c
+                # user.name="John Doe" reset --hard; sh -c 'git clean -fdx'` that
+                # costs the count exactly one call -- enough to match what the
+                # real parser measures, which is what silences the backstop.
+                #
+                # So when the position cannot be read, look ahead instead of
+                # giving up: a covered verb further along, before the next
+                # separator, is counted. That over-counts a line like
+                # `git status --short reset`, and it over-counts `git bisect
+                # reset`, which discards nothing and which an agent does type --
+                # one refusal each, no loss, and the alternative is the fail-open
+                # above.
+                for j, raw in enumerate(raws):
+                    if any(ch in raw for ch in SEPARATORS):
+                        break
+                    if words[j] in COVERED:
+                        found += 1
+                        break
     return found
 
 
@@ -354,10 +480,11 @@ def shell_path(raw: str, what: str) -> Path:
 
     `~` resolves here, this hook and that shell sharing a home. Nothing else
     does, and every caller that turns a written word into a directory goes
-    through this -- `cd`, `pushd`, and `git -C` alike. They had the check
-    separately once, and the one that went without it let
-    `git -C $REPO reset --hard` through while `cd $REPO && git reset --hard` was
-    correctly refused: the same question, answered twice, drifting apart.
+    through this -- `cd`, `pushd`, and `git -C` alike. Checked at each site
+    instead, the same question is answered several times and the answers drift:
+    one site without the check lets `git -C $REPO reset --hard` through while
+    `cd $REPO && git reset --hard`, which asks exactly the same thing, is
+    refused.
     """
     path = Path(raw).expanduser()
     if UNEXPANDED.search(str(path)) or GLOB.search(str(path)):
@@ -410,12 +537,28 @@ def git(cwd: str, *args: str) -> str:
     return proc.stdout
 
 
+def git_line(cwd: str, *args: str) -> str:
+    """A query whose whole answer is one line, with the newline off.
+
+    Every `rev-parse` whose OUTPUT this hook reads answers that way -- the two
+    that only test an exit code, `in_repository` and `is_ref`, call `git`
+    directly and want none of this. At the three callers that do read it, the
+    strip is not cosmetic. As a path it feeds `Path`, where a
+    trailing newline makes a directory that compares unequal to the same
+    directory and exists nowhere; one of those paths goes on to be a subprocess
+    `cwd`, which fails outright. Spliced into an override token's payload it
+    changes the token, so a refusal would mint one hash and the re-run would
+    look for another.
+    """
+    return git(cwd, *args).strip()
+
+
 # Commands that precede the real one without changing what it is. A wrapper's own
 # options are NOT stepped over -- that needs per-wrapper knowledge, and the
 # prefixes that actually show up here take none. `sudo -u x git reset --hard` is
-# therefore not recognized as a call, and used to pass on that account; it now
-# lands on the mention test in `main` and is refused, which is what makes leaving
-# the per-wrapper knowledge out affordable.
+# therefore not recognized as a call at all -- it lands on the mention test in
+# `main` and is refused there, which is what makes leaving the per-wrapper
+# knowledge out affordable.
 WRAPPERS = frozenset(
     {"env", "sudo", "doas", "nice", "nohup", "time", "command", "stdbuf"}
 )
@@ -556,17 +699,35 @@ GIT_VALUE_OPTS = frozenset(
     }
 )
 
-# Of those, the ones that move what the subcommand acts on.
-GIT_RELOCATING = frozenset({"--git-dir", "--work-tree", "--namespace"})
+# git globals that change NOTHING this hook measures. Anything else in git's
+# global position is treated as moving the ground under the measurement.
+#
+# The direction is the whole point, and it is the one `git_args` already takes
+# for the `GIT_` environment prefix. git's global surface grows, so a list of the
+# globals that MATTER goes quiet on whichever was added last: `--icase-pathspecs`
+# makes the pathspec `readme.MD` reach `README.md` at run time, while this hook's
+# `git diff --name-only -- readme.MD` matches nothing and reports an empty tree
+# at stake. A list of the globals that are HARMLESS goes quiet in the other
+# direction, and costs one override token.
+#
+# `-C` and `-c` are here because neither is stepped over blindly: `-C` is
+# collected and its directories resolved, and `-c` is read for the one setting
+# that waives git's own refusal. What the rest of a `-c` carries is config, which
+# the header already lists among the things this hook does not follow.
+GIT_INERT_GLOBALS = frozenset(
+    {"-C", "-c", "-p", "-P", "--paginate", "--no-pager", "--no-optional-locks"}
+)
 
 
-def strip_global_opts(argv: list[str]) -> tuple[list[str], list[str], bool]:
+def strip_global_opts(argv: list[str]) -> tuple[list[str], list[str], str | None]:
     """Peel git's own options off the front.
 
-    Returns (`-C` dirs, subcommand argv, relocated). `relocated` marks
-    `--git-dir` / `--work-tree` / `--namespace`, which move what the subcommand
-    acts on, so a measurement taken in the resolved cwd would describe a
-    different tree. This function never raises: the caller decides, because
+    Returns (`-C` dirs, subcommand argv, unknown). `unknown` is the first global
+    option here that is not in `GIT_INERT_GLOBALS`, or None -- the token itself
+    rather than a flag, so the caller can name it. Anything outside that set may
+    move what the subcommand acts on or how its pathspecs match, either of which
+    makes a measurement taken here describe something other than what runs.
+    This function never raises: the caller decides, because
     refusing has to happen after the verb is recognized, not before -- otherwise
     the refusal is indistinguishable from "not a shape we cover" and the command
     would be let through.
@@ -577,13 +738,13 @@ def strip_global_opts(argv: list[str]) -> tuple[list[str], list[str], bool]:
     accept what git does not.
     """
     cdirs: list[str] = []
-    relocated = False
+    unknown: str | None = None
     i = 0
     while i < len(argv):
         tok = argv[i]
         name = tok.split("=", 1)[0]
-        if name in GIT_RELOCATING:
-            relocated = True
+        if unknown is None and tok.startswith("-") and name not in GIT_INERT_GLOBALS:
+            unknown = tok
         if name in GIT_VALUE_OPTS and "=" not in tok:
             if name == "-C" and i + 1 < len(argv):
                 cdirs.append(argv[i + 1])
@@ -592,7 +753,7 @@ def strip_global_opts(argv: list[str]) -> tuple[list[str], list[str], bool]:
             i += 1
         else:
             break
-    return cdirs, argv[i:], relocated
+    return cdirs, argv[i:], unknown
 
 
 # Subcommands this hook covers at all. Recognition turns on the verb alone, with
@@ -614,7 +775,11 @@ def split_at_ddash(rest: list[str]) -> tuple[list[str], list[str] | None]:
     return rest, None
 
 
-# Every long option this hook tests a subcommand for. A subcommand's options go
+# The long options this hook expands abbreviations for. `--orphan` is tested for
+# elsewhere and is deliberately NOT here -- `abbreviates` says why -- so adding a
+# newly tested option to this set is the usual move, not the invariable one.
+#
+# A subcommand's options go
 # through git's parse-options, which accepts any unambiguous abbreviation, so
 # `git reset --har` really does reset and `git clean --forc -d` really does
 # delete. Matching by equality alone reads those as unflagged and lets them
@@ -733,8 +898,62 @@ def certainly_harmless(argv: list[str]) -> bool:
     if verb == "switch":
         return not forced(flags)
     if verb == "checkout":
-        return not forced(flags) and bool(flags & {"b", "B"})
+        # Full spelling only for `--orphan`, unlike the forced arm in
+        # `stake_for`: this side answers "measure nothing", so a wrong guess
+        # here drops the measurement rather than widening it.
+        return not forced(flags) and (bool(flags & {"b", "B"}) or "--orphan" in flags)
     return False
+
+
+# What git reads as false in a boolean config value. Measured: `=false`, `=0`,
+# `=no` and `=off` each let `git clean -d` delete untracked content, while
+# `=true` and a bare `-c clean.requireForce` (no value) leave git refusing.
+CONFIG_FALSE = frozenset({"false", "0", "no", "off"})
+
+
+def force_waived(argv: list[str]) -> bool:
+    """Whether `-c clean.requireForce=<false>` rides in the command's own argv.
+
+    `git clean` refuses without `-f` -- unless that setting says otherwise, and
+    then a bare `git clean -d` deletes untracked directories. The header lists
+    this config among the things left uncovered, on the ground that following
+    every way git can be reconfigured means reproducing git's own worktree
+    normalization. That ground does not reach THIS spelling: the setting is a
+    token in the argv this hook already tokenizes, so reading it costs no query
+    and no normalization.
+
+    What stays uncovered is the same setting in a config FILE. Reading that needs
+    a repository query this function does not make, and the reasoning above does
+    not extend to it.
+
+    Only the separate spelling is checked, because only the separate spelling
+    exists: `git -cclean.requireForce=false` exits 129 as an unknown option. The
+    key is compared case-insensitively, as git compares it -- `requireforce`
+    waives the refusal just as `requireForce` does.
+    """
+    for i, tok in enumerate(argv):
+        if tok != "-c" or i + 1 >= len(argv):
+            continue
+        name, sep, value = argv[i + 1].partition("=")
+        if (
+            sep
+            and name.strip().lower() == "clean.requireforce"
+            and value.strip().lower() in CONFIG_FALSE
+        ):
+            return True
+    return False
+
+
+def abbreviates(flags: set[str], full: str) -> bool:
+    """Whether any long flag present could be an abbreviation of `full`.
+
+    Subcommand options are parse-options, so git accepts any unambiguous prefix
+    -- `--orph` really does create an orphan branch. Callers use this only where
+    guessing wrong widens the measurement, never where it narrows one: the
+    asymmetry `expand_flags` describes at length, applied to a flag whose full
+    spelling `LONG_OPTS` deliberately does not carry.
+    """
+    return any(f.startswith("--") and len(f) > 2 and full.startswith(f) for f in flags)
 
 
 def given(flags: set[str], short: str, long: str) -> bool:
@@ -742,11 +961,10 @@ def given(flags: set[str], short: str, long: str) -> bool:
 
     Here for the reason `forced` is here, and with the same two callers:
     `certainly_harmless` reading a form as safe while `stake_for` reads it as a
-    discard lets the discard past without ever being measured. Both spellings
-    were previously written out at every site, which is the arrangement
-    `forced`'s own docstring records having already drifted apart once -- one
-    branch had dropped a spelling, and nothing about the two sites made that
-    visible.
+    discard lets the discard past without ever being measured. Spelling the pair
+    out at each site instead leaves the two sites free to disagree with nothing
+    about either making the disagreement visible -- `forced`'s own docstring
+    names that same hazard, on the same two callers.
 
     Note the asymmetry with `forced`, which keeps its own body: `--force` is not
     a single long spelling but a set, because `switch` says `--discard-changes`
@@ -761,8 +979,8 @@ def forced(flags: set[str]) -> bool:
 
     One definition, because the two callers have to agree: `certainly_harmless`
     deciding a form is safe while `stake_for` reads it as a discard would let the
-    discard past without ever being measured. They were written apart and had
-    already drifted -- one branch omitted `--discard-changes`.
+    discard past without ever being measured. Written apart, they drift, and a
+    branch missing `--discard-changes` is exactly that drift.
     """
     return "f" in flags or bool(flags & {"--force", "--discard-changes"})
 
@@ -867,11 +1085,14 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
     Returns None when the shape is outside the list this hook covers, or when it
     is one of the covered verbs in a form that destroys nothing.
     """
-    _, rest, relocated = strip_global_opts(argv)
+    _, rest, unknown = strip_global_opts(argv)
     if not rest:
         return None
-    if relocated:
-        raise Unmeasurable("--git-dir/--work-tree relocates the tree to measure")
+    if unknown is not None:
+        raise Unmeasurable(
+            f"`{unknown}` is a git global this hook does not recognize, and one "
+            "can move what the command acts on or how its pathspecs match"
+        )
     verb, args = rest[0], rest[1:]
     # Options are read only from BEFORE `--`. Everything after it is a pathspec,
     # and a filename opening with a dash would otherwise be split per character
@@ -895,13 +1116,25 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
             # the tree alone, so reading it as force would deny every branch
             # creation on a dirty tree.
             return ("worktree", [], False) if force else None
-        if flags & {"b", "B"}:
-            # The operand here is the new branch's name, not a pathspec, so it
-            # must not reach `paths_of` -- an unborn branch resolves as no ref,
-            # and reading it as a path would narrow the measurement to a file
-            # that does not exist and report nothing at stake. Unforced, branch
-            # creation keeps the working tree; forced, it discards all of it.
-            return ("worktree", [], False) if force else None
+        # The operand of these is the new branch's NAME, not a pathspec, so it
+        # must not reach `paths_of` -- an unborn branch resolves as no ref, and
+        # reading it as a path narrows the measurement to a file that does not
+        # exist and reports nothing at stake. Unforced, branch creation keeps the
+        # working tree; forced, it discards all of it. Both measured.
+        #
+        # `--orphan` belongs in this set for that reason: leave it out and
+        # `git checkout -f --orphan fresh` goes straight through, taking the
+        # whole worktree with it.
+        names_a_branch = bool(flags & {"b", "B"}) or "--orphan" in flags
+        if force and (names_a_branch or abbreviates(flags, "--orphan")):
+            # An abbreviation may guess HERE and nowhere else. Guessing wrong on
+            # this side widens to the whole worktree, which a forced checkout
+            # reaches anyway; guessing wrong on the unforced side below would
+            # answer "nothing at stake" for `--ou`, which is far more likely to
+            # be `--ours` -- and `--ours` does write the worktree.
+            return ("worktree", [], False)
+        if names_a_branch:
+            return None
         paths = paths_of(cwd, args)
         if force:
             # `-f` waives git's own refusal; it does not widen what the command
@@ -932,7 +1165,9 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
     if verb == "clean":
         if given(flags, "n", "--dry-run"):
             return None
-        if not given(flags, "f", "--force"):
+        if not given(flags, "f", "--force") and not force_waived(argv):
+            # `argv`, not `rest`: the setting sits among git's own options, which
+            # `strip_global_opts` has already peeled off by this point.
             return None
         ignored = "-ignored-only" if "X" in flags else "-all" if "x" in flags else ""
         # Without `-d`, clean does not descend into an untracked DIRECTORY: it
@@ -1063,7 +1298,7 @@ def measure(cwd: str, kind: str, pathspecs: list[str]) -> tuple[list[str], str, 
     # `gone`, and the fingerprint stops depending on content at all -- so an
     # override token issued once keeps unlocking whatever the file is rewritten
     # to hold.
-    root = Path(git(cwd, "rev-parse", "--show-toplevel").strip())
+    root = Path(git_line(cwd, "rev-parse", "--show-toplevel"))
     marks = []
     for n in names:
         try:
@@ -1089,6 +1324,28 @@ def hunk_headers(cwd: str, paths: list[str]) -> list[str]:
             out.append(f"  {path}")
             out.extend(f"    {h}" for h in heads)
     return out
+
+
+def nearest_existing(path: Path) -> Path | None:
+    """The closest ancestor of `path` that exists and sits inside a repository.
+
+    A directory this line has still to create holds nothing now, but git resolves
+    UPWARDS out of it, so what a command run there can reach is whatever
+    repository encloses the nearest directory that does exist. None when there is
+    no such directory, or when it is in no repository -- there, whatever the line
+    puts at `path` is either a repository of its own, whose content the line just
+    created, or not a repository at all, and git stops.
+
+    Shared by the two spellings of "run it over there", `cd` and `git -C`, which
+    have to answer alike: the same intent written two ways, decided two ways, is
+    a fail-open behind whichever way is not looked at.
+    """
+    existing = path
+    while not existing.is_dir() and existing != existing.parent:
+        existing = existing.parent
+    if not existing.is_dir() or not in_repository(str(existing)):
+        return None
+    return existing
 
 
 def resolve_cwd(
@@ -1136,9 +1393,10 @@ def resolve_cwd(
     --hard` a pass over whatever the variable actually names.
 
     A `cd` the shell runs in a SUBSHELL is undone when that subshell ends, so it
-    is undone here too: `(cd /other && git status); git reset --hard` reset the
-    payload's own tree while this measured `/other` and found it clean. Parens
-    are tracked as a stack, restoring the directory saved on the way in; a `cd`
+    is undone here too: `(cd /other && git status); git reset --hard` resets the
+    payload's OWN tree, so letting the `cd` outlive the parens measures `/other`,
+    finds it clean, and answers about a tree the line never touches. Parens are
+    tracked as a stack, restoring the directory saved on the way in; a `cd`
     in a pipeline or backgrounded with `&` gets its own subshell the same way and
     is skipped outright.
 
@@ -1208,42 +1466,50 @@ def resolve_cwd(
         moved = target if target.is_absolute() else (cwd / target).resolve()
         if moved.is_dir():
             cwd = moved
-        elif all(commands[k][0] == "&&" for k in range(j + 1, idx + 1)):
-            # EVERY separator from here to the git call, not just the next one.
+        elif chained:
+            # `chained` is EVERY separator from here to the git call, not just
+            # the next one.
             # `&&` guards only what immediately follows it: after
             # `cd nosuchdir && echo x; git reset --hard` the failed `cd` stops
             # `echo`, and the `;` then runs the discard in the directory the
             # shell never left. Reading the first `&&` as covering the whole line
-            # let that through.
+            # lets that through.
             #
-            # And "the directory holds nothing" is about the directory ALONE.
-            # git resolves upwards, so a command run in a path this line creates
-            # still reaches the repository above it -- `mkdir -p d && cd d &&
-            # git reset --hard` destroyed the enclosing tree, whose content is
-            # exactly the kind that predates the line. So the measurement falls
-            # back to the nearest directory that already exists; only when that
-            # one is in no repository is there nothing here to protect.
-            # Only when that nearest existing directory is itself inside a
-            # repository is there anything above to reach. Outside one, whatever
-            # the line puts there is either a repository of its own -- a fresh
-            # clone, whose content the line just created -- or not a repository
-            # at all, and git stops.
-            existing = moved
-            while not existing.is_dir() and existing != existing.parent:
-                existing = existing.parent
-            if not existing.is_dir() or not in_repository(str(existing)):
-                return None
-            # Measured, but WIDER than the command reaches: whatever the line
-            # puts at `moved` may well be a repository of its own, and then none
-            # of what is named here is inside it. The reason has to say so, or a
-            # list of the parent's files reads as the exact set at stake.
-            return (str(existing), True) if existing.is_dir() else None
+            # The shell moves here whether or not the directory exists yet, so
+            # this follows it and keeps walking. Answering at this point instead
+            # abandons every later move on the same line: under
+            # `mkdir -p d && cd d && cd <other-repo> && git reset --hard` the
+            # answer would describe the tree the payload named, which may hold
+            # nothing, while the command lands in <other-repo> and takes its
+            # uncommitted work. Where the walk ENDS is the only directory worth
+            # answering about.
+            cwd = moved
         else:
             # The `cd` will fail and something after it still reaches the git
             # call, which therefore runs right here. Measure that, and step over
             # the move.
             continue
-    return (str(cwd), False) if cwd.is_dir() else None
+    if cwd.is_dir():
+        return (str(cwd), False)
+    # The walk ended somewhere this line has still to create, and "the directory
+    # holds nothing" is about the directory ALONE. git resolves upwards, so a
+    # command run in a path this line creates still reaches the repository above
+    # it: `mkdir -p d && cd d && git reset --hard` takes the enclosing tree, whose
+    # content is exactly the kind that predates the line. So the measurement
+    # falls back to the nearest directory that already exists.
+    #
+    # Only when that nearest existing directory is itself inside a repository is
+    # there anything above to reach. Outside one, whatever the line puts there is
+    # either a repository of its own -- a fresh clone, whose content the line
+    # just created -- or not a repository at all, and git stops.
+    existing = nearest_existing(cwd)
+    if existing is None:
+        return None
+    # Measured, but WIDER than the command reaches: whatever the line puts at the
+    # target may well be a repository of its own, and then none of what is named
+    # here is inside it. The reason has to say so, or a list of the parent's
+    # files reads as the exact set at stake.
+    return (str(existing), True)
 
 
 def stash_form(kind: str) -> str:
@@ -1287,16 +1553,15 @@ def stash_routes() -> str:
 # that offer a stash and end on the same promise; the worktree message makes a
 # different, joint claim covering `keep.patch` as well and writes its own.
 #
-# Complete, and that is the whole design note. Factored first as the bare
-# predicate `"keeps the entry if it cannot"`, on the reasoning that the sites did
-# not share a sentence -- which is true, and is exactly why a fragment was the
-# wrong unit: each site then had to supply the subject and verb the ellipsis was
-# written for, and two of three supplied the wrong ones. The emitted text read
-# "the stash keeps the entry if it cannot", with the subject moved off the pop it
-# describes, and "A pop that cannot place its entry keeps the entry if it
-# cannot", which says nothing at all. `stash_routes()` is the pattern that works:
-# shared text that arrives already grammatical, so a splice site cannot get it
-# wrong.
+# COMPLETE, which is the whole of the design note. The sites do not share a
+# sentence, and that is exactly why the shared unit is a whole clause rather than
+# the bare predicate `"keeps the entry if it cannot"`: a fragment leaves each
+# site to supply the subject and verb the ellipsis was written for, and a site
+# that supplies the wrong one emits "the stash keeps the entry if it cannot" --
+# the subject moved off the pop it describes -- or "A pop that cannot place its
+# entry keeps the entry if it cannot", which says nothing at all. Shared text
+# that arrives already grammatical cannot be spliced wrong; `stash_routes()` is
+# the same pattern.
 POP_BACK = "`git stash pop` brings them back, and keeps the entry if it cannot"
 
 
@@ -1366,11 +1631,10 @@ def build_reason(
     # hook -- and only one of them is worth acting on.
     #
     # The two causes get their own sentences, and are not collapsed into one
-    # flag's worth of prose. They were: a single boolean printed the pathspec
-    # wording for both, so `mkdir -p d && cd d && git reset --hard` -- which
-    # carries no narrowing at all -- was told its narrowing had not been
-    # forwarded. Both can hold at once, so this is two `if`s and not an
-    # `elif`.
+    # flag's worth of prose. A single boolean prints the pathspec wording for
+    # both, which tells `mkdir -p d && cd d && git reset --hard` -- a line
+    # carrying no narrowing at all -- that its narrowing was not forwarded. Both
+    # can hold at once, so this is two `if`s and not an `elif`.
     if narrowing_dropped:
         lines += [
             "",
@@ -1628,20 +1892,19 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         if token in set(ACK_RE.findall(command)):
             return False
         why = clipped(why)
-        # WHERE to run the listing. This used to read "in the tree that command
-        # targets", on the reasoning that the caller holds the command that
-        # names it -- which covers a `GIT_DIR=` or a written-out `cd`, and fails
-        # exactly where this branch is reached most sharply. A `popd` returns to
-        # a directory only the shell's stack knows; the hook refused BECAUSE it
-        # could not settle which tree, and the caller reading this holds the same
-        # text and can settle it no better.
+        # WHERE to run the listing. Naming "the tree that command targets" would
+        # be no help here: it covers a `GIT_DIR=` or a written-out `cd`, and
+        # fails exactly where this branch is reached most sharply. A `popd`
+        # returns to a directory only the shell's stack knows; this hook refuses
+        # BECAUSE it cannot settle which tree, and the caller reading the message
+        # holds the same text and can settle it no better.
         #
         # So the message anchors on the directory that IS knowable: where the
         # shell stood when the harness handed this over. When even that is
         # missing the anchor is DROPPED rather than printed empty -- one of the
         # ways into this branch is a payload carrying no working directory, and
-        # that branch was rendering `The shell was in '' when this was checked`
-        # directly beneath its own reason saying the directory was never given.
+        # an anchor printed anyway reads `The shell was in '' when this was
+        # checked` directly beneath its own reason saying there was no directory.
         where = (
             f"The shell was in {operand(cwd)} when this was checked; if the line "
             "moves from there (`cd`, `pushd`, `popd`, or a `GIT_DIR` / "
@@ -1665,8 +1928,8 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
             + f"`{listing_for('untracked-all')}` and set aside anything worth "
             f"keeping: {stash_routes()}, each with `-- <path>...`.\n"
             "\n"
-            # The way back, which this message used to leave unsaid while
-            # telling the reader to set content aside. Said PER PUSH, because
+            # The way back, which a message telling the reader to set content
+            # aside owes them. Said PER PUSH, because
             # unlike the measured messages this one offers three spellings at
             # once: a tree holding both a tracked change and an ignored file
             # takes two pushes, and one pop then strands an entry.
@@ -1680,9 +1943,10 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         # caught and turned into a refusal; this function IS the refusal, so a
         # fault here had nothing above it and escaped to a non-zero exit -- which
         # the harness reports as a non-blocking error before running the command.
-        # The hook's own worst outcome, reached through its own safety path. It
-        # was live: a lone surrogate in the command text raised inside the token
-        # hash, and `git reset --hard` ran.
+        # The hook's own worst outcome, reached through its own safety path. Not
+        # hypothetical: a lone surrogate in the command text raises inside the
+        # token hash, and with nothing here to catch it the `git reset --hard`
+        # it was refusing runs.
         #
         # A fixed string is the only refusal trustworthy here, because every
         # ingredient of a composed one is implicated: the command that would not
@@ -1752,12 +2016,17 @@ def main() -> None:
                 # of saying "run it over there" have to answer alike.
                 cwd = str(Path(cwd) / shell_path(d, "`git -C` target"))
             if not Path(cwd).is_dir():
-                # `git -C <missing>` exits 128 without opening anything, so this
-                # reaches nothing either. A directory that exists but cannot be
-                # reached from here lands in the same branch and is treated the
-                # same way, because git runs as this hook does and stops where it
-                # stops.
-                continue
+                # `git -C <missing>` exits 128 when the directory really is
+                # absent. But a line that CREATES it first --
+                # `mkdir -p d && git -C d reset --hard` -- has git resolving
+                # upwards out of the new directory into the repository above it,
+                # which is the same thing `cd d` does and is measured the same
+                # way. Answering "reaches nothing" here decided one intent two
+                # ways depending on which spelling it was written in.
+                existing = nearest_existing(Path(cwd))
+                if existing is None:
+                    continue
+                cwd, wider_than_reach = str(existing), True
             stake = stake_for(cwd, rest)
             if stake is None:
                 continue  # a covered verb, in a form that discards nothing
@@ -1767,7 +2036,7 @@ def main() -> None:
                 continue  # nothing at stake; let it run
             payload = "\0".join(
                 [
-                    git(cwd, "rev-parse", "--absolute-git-dir").strip(),
+                    git_line(cwd, "rev-parse", "--absolute-git-dir"),
                     bound_to(command),
                     fingerprint,
                 ]
@@ -1779,7 +2048,7 @@ def main() -> None:
             # tokens accumulate while `search` keeps returning the earliest.
             if token in set(ACK_RE.findall(command)):
                 continue  # override presented, and still describes this content
-            root = git(cwd, "rev-parse", "--show-toplevel").strip()
+            root = git_line(cwd, "rev-parse", "--show-toplevel")
             # Run the per-file diffs from the root, because the names came from
             # `git diff --name-only`, which reports root-relative paths wherever
             # it ran. Passing them back as pathspecs in a subdirectory resolves
@@ -1841,10 +2110,11 @@ def main() -> None:
     #
     # So that signature is the test. It counts rather than matches, because one
     # unread call among several read ones has to refuse too. It is deliberately
-    # cruder than the parse it backstops: quoted runs come out first, and a
-    # `git` that is merely NEAR a verb word -- `echo git reset --hard >> log` --
-    # is refused. That is the cost of the guarantee, and it is a token, not a
-    # loss.
+    # cruder than the parse it backstops: it reads a command name off the
+    # characters around it and knows nothing of who owns the line, so a `git`
+    # that is an ARGUMENT to something else -- `echo git reset --hard >> log` --
+    # reads as a call and is refused. That is the cost of the guarantee, and it
+    # is a token, not a loss.
     # `mentions` re-reads the raw command, so it can fail on the same input the
     # parse above did -- and it is the LAST thing this hook does, with nothing
     # after it to notice. A count that could not be taken is not a count of zero:

@@ -89,9 +89,11 @@ def dirty_repo(tmp_path: Path) -> Path:
 
 
 def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
-    """Deriving the override token is inside the refusal, so a fault there used
-    to escape the refusal entirely. It is what a lone surrogate in the command
-    text did, and the tree was destroyed on the way past."""
+    """Deriving the override token happens INSIDE the refusal, so a fault there
+    escapes the refusal itself unless something catches it there. A lone
+    surrogate in the command text is such a fault, and what it escapes into is
+    a non-zero exit, which the harness reports as a non-blocking error before
+    running the very command being refused."""
     code, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
     assert code == 0, out
     reason = decision(out)

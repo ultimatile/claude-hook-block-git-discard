@@ -125,10 +125,17 @@ are worth knowing about up front:
 | `grep 'git checkout -- a.txt' log.txt` | denied |
 | `docker run --rm alpine git clean -fdx` | denied |
 | a heredoc that *writes* a script containing `git reset --hard` | denied |
+| `git bisect reset` | denied |
+| `git status --short reset` | denied |
 
 Each costs one override token, and none costs data. Telling these apart from a
-real call is precisely the parsing that kept going wrong, so the hook stopped
-trying.
+real call is precisely the parsing the hook declines to attempt, because a wrong
+answer there costs data rather than a token.
+
+The last two differ only in how they get there: the hook reads the call — `git
+bisect`, `git status` — but not its subcommand, and rather than give up on a
+position it cannot read it scans ahead for a covered verb, a refusal bought
+deliberately to close a measured fail-open.
 
 ## Development
 
@@ -138,11 +145,10 @@ uv run pytest
 ```
 
 The suite runs the installed console script as a subprocess against real
-repositories built under `tmp_path`. That is deliberate: the hook's central
-guarantee is that every path after recognition reaches `print()` and exits 0,
-because a hook that exits non-zero is reported as a non-blocking error and the
-command then runs. In-process, a raise looks like a test error; as a subprocess,
-it looks like the fail-open it actually is.
+repositories built under `tmp_path`, and needs to keep doing so: an escaping
+raise is a non-zero exit, which the harness reports as a non-blocking error
+before running the command — a fail-open that an in-process test would show as
+an ordinary test error.
 
 To run against a working checkout while developing:
 
