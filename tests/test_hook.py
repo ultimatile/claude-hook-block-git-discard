@@ -611,6 +611,109 @@ def test_clean_narrows_to_its_pathspec(deny_reason: HookRunner, repo: Path) -> N
     assert "precious" not in reason
 
 
+def nested_repo(parent: Path, name: str = "inner") -> Path:
+    """A repository inside `parent`'s working tree, which `parent` does not track.
+
+    `ls-files --others` reports it as a single `inner/` entry and will not look
+    inside, because git does not descend into another repository. That makes it
+    the one untracked stake the listing cannot break into files -- and the
+    heaviest, since the worktree, the index and the object store all sit in the
+    directory a `-ff` deletes.
+    """
+    r = init(parent / name)
+    (r / "page.md").write_text("a chapter\n")
+    commit_all(r)
+    return r
+
+
+def test_a_pathspec_reaches_into_an_untracked_directory(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """A pathspec naming a wholly-untracked directory removes it, `-d` or not.
+
+    Measured against git: `git clean -f newmodule` and `git clean -f .` both
+    print `Removing newmodule/` with no `-d` anywhere. `--directory` collapses
+    that directory to one name, so reading the collapsed entry as out of reach
+    drops the very content this hook refuses when the same files sit beside a
+    tracked one.
+    """
+    (repo / "newmodule").mkdir()
+    (repo / "newmodule" / "impl.py").write_text("work worth keeping\n")
+    for command in ("git clean -f newmodule", "git clean -f ."):
+        reason = deny_reason(HOOK, command, payload_cwd=repo)
+        assert reason is not None, command
+        assert "newmodule/impl.py" in reason, reason
+
+
+def test_a_clean_with_no_pathspec_leaves_an_untracked_directory_alone(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The other side of that boundary, without which the fix over-refuses.
+
+    With neither `-d` nor a pathspec git leaves the directory whole, so the
+    collapsed entry really is out of reach and a refusal here would be in the way
+    over nothing.
+    """
+    (repo / "newmodule").mkdir()
+    (repo / "newmodule" / "impl.py").write_text("work worth keeping\n")
+    assert deny_reason(HOOK, "git clean -f", payload_cwd=repo) is None
+
+
+def test_a_doubly_forced_clean_is_refused_over_a_nested_repository(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`-ff` deletes a directory holding its own `.git`, history included.
+
+    Nothing survives it and no reflog holds it, because everything that could
+    restore it lived inside the directory. Measured against git, `-ff` paired
+    with either `-d` or a pathspec is what reaches it.
+    """
+    nested_repo(repo, "inner")
+    for command in ("git clean -ffd", "git clean -ff inner"):
+        reason = deny_reason(HOOK, command, payload_cwd=repo)
+        assert reason is not None, command
+        assert "inner/" in reason, reason
+
+
+def test_a_singly_forced_clean_is_not_refused_over_a_nested_repository(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """Single force never reaches it, whatever else is on the line.
+
+    Measured: `git clean -fd`, `git clean -f .` and `git clean -f inner` all
+    leave the directory whole, and so does `-ff` with neither `-d` nor a
+    pathspec. Refusing on the entry alone would deny every `-fd` in any tree that
+    happens to hold a second repository.
+    """
+    nested_repo(repo, "inner")
+    for command in (
+        "git clean -fd",
+        "git clean -f .",
+        "git clean -f inner",
+        "git clean -ff",
+    ):
+        assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
+
+
+def test_force_is_counted_from_flag_names_not_from_raw_letters() -> None:
+    """An `f` inside an option's VALUE is not a second force.
+
+    `-efpat` carries the pattern `fpat`, so a count taken over the token's
+    characters reads a force that was never given and refuses a command that
+    reaches no nested repository.
+    """
+    from block_git_discard.hook import forced_twice
+
+    assert forced_twice(["-ff"])
+    assert forced_twice(["-f", "-f"])
+    assert forced_twice(["-f", "--force"])
+    assert forced_twice(["--force", "--force"])
+    assert not forced_twice(["-f"])
+    assert not forced_twice(["-fd"])
+    assert not forced_twice(["--force"])
+    assert not forced_twice(["-f", "-efpat"])
+
+
 def test_separated_source_value_is_not_taken_as_a_pathspec(
     deny_reason: HookRunner, nested: Path
 ) -> None:
@@ -703,6 +806,23 @@ def issue_token(deny_reason: HookRunner, repo: Path, command: str) -> str:
     found = ACK.search(reason)
     assert found is not None, reason
     return found.group(1)
+
+
+def test_a_token_for_a_nested_repository_follows_the_content_inside_it(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The mark for a directory-shaped stake has to come from the files under it.
+
+    A directory's own `stat` does not move when a file inside it is rewritten, so
+    a token bound to that keeps unlocking whatever the tree is later made to
+    hold -- which is the one thing the token is for.
+    """
+    inner = nested_repo(repo, "inner")
+    token = issue_token(deny_reason, repo, "git clean -ffd")
+    acked = f"git clean -ffd # ack:{token}"
+    assert deny_reason(HOOK, acked, payload_cwd=repo) is None
+    (inner / "page.md").write_text("a chapter, rewritten after the token was issued\n")
+    assert deny_reason(HOOK, acked, payload_cwd=repo) is not None
 
 
 def test_two_covered_verbs_on_one_line_can_both_be_acked(
@@ -1092,10 +1212,111 @@ def test_missing_payload_cwd_denies(deny_reason: HookRunner, repo: Path) -> None
     assert deny_reason(HOOK, "git checkout -- a.txt") is not None
 
 
-def test_non_repository_cwd_denies(deny_reason: HookRunner, tmp_path: Path) -> None:
+def test_a_cwd_in_no_repository_has_nothing_to_lose(
+    deny_reason: HookRunner, tmp_path: Path
+) -> None:
+    """A covered verb outside any repository destroys nothing, so it is allowed.
+
+    This assertion is the reverse of the one it replaces, which asserted a deny
+    and recorded no reason for it. Three things decide it:
+
+    git resolves a repository by walking UP from the directory it runs in, and
+    when that walk finds none it exits without touching a file. `in_repository`
+    asks git that same question, from the same directory and in the same
+    environment, so its answer is the one the real command will get -- including
+    when a `GIT_DIR` in the environment makes the walk succeed after all.
+
+    The refusal it produced was not a measured one. It carried git's own clipped
+    usage screen as its explanation, over a directory holding nothing.
+
+    And the hook already answers the neighbouring case the other way: a `cd` into
+    a directory that does not exist YET is read as "nothing here to lose" and
+    allowed, on the same reasoning. Denying here made one intent get two answers
+    depending on whether the directory happened to exist.
+    """
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert deny_reason(HOOK, "git checkout -- a.txt", payload_cwd=plain) is not None
+    assert deny_reason(HOOK, "git checkout -- a.txt", payload_cwd=plain) is None
+    # The pair is pinned together, because it is their disagreement that was the
+    # defect rather than either answer on its own.
+    missing = tmp_path / "not-created-yet"
+    assert deny_reason(HOOK, "git checkout -- a.txt", payload_cwd=missing) is None
+
+
+def test_a_conflicted_file_is_counted_once(deny_reason: HookRunner, repo: Path) -> None:
+    """`diff --name-only` names an unmerged path once per stage it compares.
+
+    Taken at face value one conflicted file reads `2 file(s)`, is listed twice and
+    has its hunks printed twice -- and the doubled length reaches `AT_STAKE_LIMIT`
+    at half the real number of files.
+    """
+    (repo / "f.txt").write_text("base\n")
+    commit_all(repo, "base")
+    git(repo, "checkout", "-q", "-b", "theirs")
+    (repo / "f.txt").write_text("theirs\n")
+    commit_all(repo, "theirs")
+    git(repo, "checkout", "-q", "-")
+    (repo / "f.txt").write_text("ours\n")
+    commit_all(repo, "ours")
+    subprocess.run(["git", "merge", "theirs"], cwd=repo, capture_output=True)
+    assert "UU f.txt" in git(repo, "status", "--short")
+    reason = deny_reason(HOOK, "git checkout -- .", payload_cwd=repo)
+    assert reason is not None
+    assert "At stake (1 file(s))" in reason, reason
+    at_stake = reason.split("At stake", 1)[1].split("\n\n", 1)[0]
+    assert at_stake.count("f.txt") == 1, at_stake
+
+
+@pytest.mark.parametrize(
+    ("label", "name"),
+    [
+        ("double quote", 'a"b.txt'),
+        ("backslash", "a\\b.txt"),
+        ("tab", "a\tb.txt"),
+        ("newline", "a\nb.txt"),
+    ],
+)
+def test_a_token_follows_content_under_a_name_git_quotes(
+    deny_reason: HookRunner, repo: Path, label: str, name: str
+) -> None:
+    """`core.quotepath=false` covers non-ASCII bytes and these four characters anyway.
+
+    C-quoted, the name reaches the fingerprint in a spelling that stats nothing,
+    every file marks `gone`, and the fingerprint stops depending on content -- so
+    one override token keeps unlocking whatever the file is later made to hold.
+    `-z` is what removes the quoting; the setting cannot.
+    """
+    victim = repo / name
+    victim.write_text("PRECIOUS\n")
+    token = issue_token(deny_reason, repo, "git clean -fd")
+    acked = f"git clean -fd # ack:{token}"
+    assert deny_reason(HOOK, acked, payload_cwd=repo) is None, label
+    victim.write_text("REWRITTEN AFTER THE TOKEN WAS ISSUED\n")
+    assert deny_reason(HOOK, acked, payload_cwd=repo) is not None, label
+
+
+def test_a_subshell_around_the_call_keeps_the_measurement(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """A separator is a RUN of punctuation, so a `(` arrives glued to the `&&`.
+
+    Read by equality that run is not `&&`, which makes the line
+    conditional-but-not-chained and raises: the refusal survives, but it arrives
+    blind, with no at-stake list and a token bound to the command alone. The same
+    line without the parentheses is measured, and the two have to agree.
+    """
+    (repo / "sub").mkdir()
+    (repo / "sub" / "c.txt").write_text("v1\n")
+    commit_all(repo, "with sub")
+    (repo / "sub" / "c.txt").write_text("PRECIOUS\n")
+    for command in (
+        "true && cd sub && git checkout -- c.txt",
+        "true && cd sub && (git checkout -- c.txt)",
+    ):
+        reason = deny_reason(HOOK, command, payload_cwd=repo)
+        assert reason is not None, command
+        assert "At stake" in reason, command
+        assert "sub/c.txt" in reason, (command, reason)
 
 
 @pytest.mark.parametrize(

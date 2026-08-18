@@ -125,6 +125,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -848,20 +849,33 @@ def expand_flags(flags: list[str]) -> set[str]:
     everything after it is the option's value, and the letters in a value are not
     flags.
     """
-    out: set[str] = set()
+    return set(flag_occurrences(flags))
+
+
+def flag_occurrences(flags: list[str]) -> list[str]:
+    """The same names `expand_flags` reports, in order and keeping repeats.
+
+    `clean` reads its force TWICE as a different instruction than once -- `-ff`
+    reaches a directory holding its own `.git`, `-f` never does -- so a caller
+    asking that question cannot use a set. It shares this body rather than
+    counting `f` in the raw tokens, because the letters after a `SHORT_VALUE`
+    letter belong to that option's value: `-efpat` carries the pattern `fpat`
+    and no force at all, and a count taken over the token would read one.
+    """
+    out: list[str] = []
     for tok in flags:
         if tok.startswith("--"):
             name = tok.split("=", 1)[0]
-            out.add(name)
+            out.append(name)
             if len(name) > 2:
-                out.update(
+                out.extend(
                     o
                     for o in LONG_OPTS - HARMLESS_LONG
                     if o.startswith(name) and o != name
                 )
         elif tok.startswith("-") and len(tok) > 1:
             for ch in tok[1:]:
-                out.add(ch)
+                out.append(ch)
                 if ch in SHORT_VALUE:
                     break
     return out
@@ -985,6 +999,23 @@ def forced(flags: set[str]) -> bool:
     return "f" in flags or bool(flags & {"--force", "--discard-changes"})
 
 
+def forced_twice(opts: list[str]) -> bool:
+    """Whether `clean`'s force is given twice, in any spelling that repeats it.
+
+    Measured against git: a directory holding its own `.git` is removed by
+    `-ff` together with either `-d` or a pathspec that names it, and by nothing
+    weaker -- `-f`, `-fd`, `-f .` and `-f nested` all leave it whole, and `-ff`
+    on its own does too. The pair is what `measure` needs, because such a
+    directory is the one stake git will not enumerate: `ls-files --others`
+    reports it as a single `nested/` entry and refuses to look inside.
+
+    Takes the raw option tokens rather than a flag set, since a set cannot say
+    whether force arrived once or twice.
+    """
+    names = flag_occurrences([a for a in opts if a.startswith("-") and a != "--"])
+    return sum(1 for n in names if n in ("f", "--force")) >= 2
+
+
 def operands(opts: list[str], value_taking: set[str]) -> list[str]:
     """Non-option tokens from before `--`, skipping any option's separate value.
 
@@ -1052,7 +1083,15 @@ def paths_of(cwd: str, rest: list[str]) -> list[str] | None:
     return [t for t in operands if not is_ref(cwd, t)] or None
 
 
-def widened(kind: str) -> tuple[str, list[str], bool]:
+# What a covered invocation would destroy: the query kind, the pathspecs to
+# forward, whether the command's own narrowing had to be dropped, and whether it
+# reaches a directory git will not enumerate. The last one travels separately
+# from `kind` because it is a property of the FLAGS, not of the query: two
+# invocations asking `ls-files` the very same question differ on it.
+Stake = tuple[str, list[str], bool, bool]
+
+
+def widened(kind: str, reaches_nested: bool = False) -> Stake:
     """A stake measured without the narrowing the command itself carries.
 
     Every site that cannot forward a narrowing to git funnels through here, so
@@ -1061,10 +1100,10 @@ def widened(kind: str) -> tuple[str, list[str], bool]:
     reading an untouched file on the at-stake list has no way, from the list
     alone, to tell an over-wide report from a hook that is simply wrong.
     """
-    return (kind, [], True)
+    return (kind, [], True, reaches_nested)
 
 
-def narrowed(kind: str, paths: list[str]) -> tuple[str, list[str], bool]:
+def narrowed(kind: str, paths: list[str], reaches_nested: bool = False) -> Stake:
     """A stake narrowed to the pathspecs the command carries, where it can be.
 
     A pathspec holding a character the shell expands after this hook has seen it
@@ -1073,14 +1112,18 @@ def narrowed(kind: str, paths: list[str]) -> tuple[str, list[str], bool]:
     git reads differently costs the work itself. Globs are deliberately outside
     `UNEXPANDED` -- git's own glob matches at least as much as the shell's, so
     forwarding one over-detects rather than under-detects.
+
+    Widening keeps `reaches_nested` as it arrived: the command still carries the
+    pathspec that reaches such a directory, and the wider list is a superset of
+    what the narrowing would have named.
     """
     if any(UNEXPANDED.search(p) for p in paths):
-        return widened(kind)
-    return (kind, paths, False)
+        return widened(kind, reaches_nested)
+    return (kind, paths, False, reaches_nested)
 
 
-def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
-    """What this invocation would destroy, as (query kind, pathspecs, widened).
+def stake_for(cwd: str, argv: list[str]) -> Stake | None:
+    """What this invocation would destroy, as a `Stake`.
 
     Returns None when the shape is outside the list this hook covers, or when it
     is one of the covered verbs in a form that destroys nothing.
@@ -1115,7 +1158,7 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
             # lose work. `-C` is force-CREATE: it moves a branch label and leaves
             # the tree alone, so reading it as force would deny every branch
             # creation on a dirty tree.
-            return ("worktree", [], False) if force else None
+            return ("worktree", [], False, False) if force else None
         # The operand of these is the new branch's NAME, not a pathspec, so it
         # must not reach `paths_of` -- an unborn branch resolves as no ref, and
         # reading it as a path narrows the measurement to a file that does not
@@ -1132,7 +1175,7 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
             # reaches anyway; guessing wrong on the unforced side below would
             # answer "nothing at stake" for `--ou`, which is far more likely to
             # be `--ours` -- and `--ours` does write the worktree.
-            return ("worktree", [], False)
+            return ("worktree", [], False, False)
         if names_a_branch:
             return None
         paths = paths_of(cwd, args)
@@ -1160,7 +1203,7 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
         return narrowed("worktree", paths) if paths else None
 
     if verb == "reset":
-        return ("worktree", [], False) if "--hard" in flags else None
+        return ("worktree", [], False, False) if "--hard" in flags else None
 
     if verb == "clean":
         if given(flags, "n", "--dry-run"):
@@ -1170,13 +1213,25 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
             # `strip_global_opts` has already peeled off by this point.
             return None
         ignored = "-ignored-only" if "X" in flags else "-all" if "x" in flags else ""
-        # Without `-d`, clean does not descend into an untracked DIRECTORY: it
-        # removes untracked files sitting beside tracked ones and leaves the
-        # directory whole. `ls-files --others` recurses regardless, so listing
-        # its output would name `newdir/j.txt` for a `git clean -f` that leaves
-        # `newdir/` exactly as it found it.
+        # Without `-d` AND without a pathspec, clean does not descend into an
+        # untracked DIRECTORY: it removes untracked files sitting beside tracked
+        # ones and leaves the directory whole. `ls-files --others` recurses
+        # regardless, so listing its output would name `newdir/j.txt` for a bare
+        # `git clean -f` that leaves `newdir/` exactly as it found it.
+        #
+        # A pathspec that names the directory removes it, `-d` or no `-d`:
+        # measured, `git clean -f newmodule` and `git clean -f .` both print
+        # `Removing newmodule/`. That is why the pathspec reaches `measure`
+        # below, which drops the collapse whenever one is present -- what is
+        # under a matching pathspec is the same untracked content this hook
+        # already refuses, and only the listing was hiding it.
         deep = "-deep" if "d" in flags else ""
         kind = f"untracked{ignored}{deep}"
+        # A directory holding its own `.git` is the one stake git will not
+        # enumerate, and `-ff` with either `-d` or a pathspec is what reaches it.
+        # Both halves are required: measured, `-ff` alone leaves it whole, and so
+        # does `-fd`.
+        twice = forced_twice(opts)
         # `-e <pattern>` narrows what clean removes, and the report is widened
         # rather than following it. `ls-files` does take the same `--exclude`, so
         # this is a cost decision, not an impossibility: forwarding it means
@@ -1187,9 +1242,14 @@ def stake_for(cwd: str, argv: list[str]) -> tuple[str, list[str], bool] | None:
         # expand_flags strips an attached value, so `--exclude=pat` reads as
         # `--exclude`.
         if given(flags, "e", "--exclude"):
-            return widened(kind)
+            # `reaches_nested` on the force alone here, because this arm does not
+            # read the operands and so cannot say whether a pathspec is among
+            # them. Over-refusing a `-ff -e pat` that carries neither a pathspec
+            # nor `-d` costs one refusal with an override; guessing the other way
+            # costs the repository.
+            return widened(kind, twice)
         paths = after_ddash if after_ddash is not None else operands(opts, set())
-        return narrowed(kind, paths)
+        return narrowed(kind, paths, twice and bool(deep or paths))
 
     return None
 
@@ -1201,10 +1261,17 @@ LS_SELECT = {
 }
 
 # `--directory` collapses a wholly-untracked directory to its own name, so what
-# is left un-collapsed is exactly the set a `clean` without `-d` removes. The
-# `-deep` kinds drop it and take the recursive listing, which is what `-d` does
-# reach. Entries the collapse produced end in `/` and are dropped by `measure`:
-# they name a directory the command will not open.
+# is left un-collapsed is exactly the set a BARE `clean` without `-d` removes.
+# `measure` uses it only for that shape: the `-deep` kinds drop it because `-d`
+# reaches the whole recursive listing, and a command carrying a pathspec drops it
+# because a pathspec naming a directory removes it whether or not `-d` is there.
+#
+# A `/`-terminated entry survives the collapse for two unrelated reasons, so it
+# cannot be read as one: the collapse produced it, OR it is a directory holding
+# its own `.git`, which `ls-files` reports that way with and without this option
+# because git will not descend into another repository. `measure` keeps such an
+# entry when the flags reach it and drops it otherwise; `forced_twice` is what
+# separates the two.
 LS_COLLAPSE = ["--directory", "--no-empty-directory"]
 
 # Every `git diff` this hook runs carries these, because `diff.relative=true` in
@@ -1225,7 +1292,65 @@ LS_COLLAPSE = ["--directory", "--no-empty-directory"]
 DIFF_FRAME = ("--no-relative", "--diff-filter=d")
 
 
-def measure(cwd: str, kind: str, pathspecs: list[str]) -> tuple[list[str], str, str]:
+# How many files under a directory-shaped stake the fingerprint reads before it
+# stops. Such a directory holds a whole repository, and the walk runs inside a
+# PreToolUse hook, so the worst case needs a bound.
+TREE_MARK_LIMIT = 2000
+
+
+def tree_mark(path: Path) -> str:
+    """Size and mtime of the files under `path`, as one string.
+
+    A directory's own `stat` does not move when a file inside it is rewritten, so
+    a token bound to that would keep unlocking a tree whose content has since
+    changed -- the same failure the per-file marks below exist to prevent.
+
+    Sorted at every level, because the mark has to come out identical on the run
+    that issues the token and the run that presents it. `os.walk` does not follow
+    symlinks, so a link pointing at an ancestor cannot spin here.
+
+    The walk stops at `TREE_MARK_LIMIT` files and records that it did, which
+    keeps the result reproducible while bounding the cost. Content past the cap
+    is outside what the token is bound to.
+    """
+    parts: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(path, onerror=lambda _: None):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if len(parts) >= TREE_MARK_LIMIT:
+                return "\0".join([*parts, f"capped-at-{TREE_MARK_LIMIT}"])
+            f = Path(dirpath) / name
+            rel = f.relative_to(path)
+            try:
+                st = f.stat()
+            except OSError:
+                parts.append(f"{rel}\0gone")
+                continue
+            parts.append(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}")
+    return "\0".join(parts)
+
+
+def dedup(entries: list[str]) -> list[str]:
+    """The non-empty entries, first occurrence only, order kept.
+
+    `-z` output ends with a trailing NUL, so a split leaves one empty entry that
+    is not a path. And `diff --name-only` names an UNMERGED path once per stage it
+    compares, so one conflicted file arrives twice: the count then reads
+    `2 file(s)` for a single file, its hunks print twice, and the doubled length
+    reaches `AT_STAKE_LIMIT` at half the real number of files.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in entries:
+        if entry and entry not in seen:
+            seen.add(entry)
+            out.append(entry)
+    return out
+
+
+def measure(
+    cwd: str, kind: str, pathspecs: list[str], reaches_nested: bool = False
+) -> tuple[list[str], str, str]:
     """Return (affected paths, a display summary, a content fingerprint).
 
     The summary is a diffstat for the worktree kind and empty for the untracked
@@ -1244,11 +1369,16 @@ def measure(cwd: str, kind: str, pathspecs: list[str]) -> tuple[list[str], str, 
     # either the command's own narrowing or nothing.
     tail = ["--", *pathspecs] if pathspecs else []
     if kind == "worktree":
-        names = [
-            ln
-            for ln in git(cwd, "diff", *DIFF_FRAME, "--name-only", *tail).splitlines()
-            if ln
-        ]
+        # `-z`, and NUL rather than newline, because a name carrying `"`, `\`, a
+        # tab or a newline is C-quoted whatever `core.quotepath` says -- that
+        # setting only covers non-ASCII bytes. Quoted, the name reaches the reason
+        # in a spelling git will not take back: `hunk_headers` forwards it as a
+        # pathspec, matches nothing, and the hunk list empties with nothing to
+        # notice. A name holding a newline also splits into two entries under
+        # `splitlines`, so the count goes wrong as well.
+        names = dedup(
+            git(cwd, "diff", *DIFF_FRAME, "--name-only", "-z", *tail).split("\0")
+        )
         if not names:
             return [], "", ""
         # `--stat-count` because the summary is per-file too: capping the path
@@ -1276,16 +1406,26 @@ def measure(cwd: str, kind: str, pathspecs: list[str]) -> tuple[list[str], str, 
     # that resolves nowhere.
     deep = kind.endswith("-deep")
     select = LS_SELECT[kind.removesuffix("-deep")]
-    collapse = [] if deep else LS_COLLAPSE
+    # Collapsing is right only for the shape that leaves untracked directories
+    # whole, which is a clean with neither `-d` nor a pathspec. With a pathspec
+    # the recursive listing is what the command reaches: `git clean -f newmodule`
+    # removes `newmodule/impl.py`, and the collapsed `newmodule/` entry named it
+    # as one thing that then read as out of reach.
+    collapse = [] if deep or pathspecs else LS_COLLAPSE
     names = [
         ln
-        for ln in git(
-            cwd, "ls-files", "--full-name", *select, *collapse, *tail
-        ).splitlines()
-        # A trailing `/` is a directory the collapse stood in for, and a clean
-        # without `-d` leaves it alone. Listing it would name content the command
-        # does not reach; dropping it leaves the files beside it, which it does.
-        if ln and not ln.endswith("/")
+        for ln in dedup(
+            git(cwd, "ls-files", "--full-name", "-z", *select, *collapse, *tail).split(
+                "\0"
+            )
+        )
+        # A trailing `/` is either a directory the collapse stood in for -- whose
+        # files the command leaves alone, so naming it would name content out of
+        # reach -- or a directory holding its own `.git`, which git reports this
+        # way whatever options it is given and which `-ff` removes outright,
+        # history included. `reaches_nested` is the flags' answer to which one is
+        # in front of us, so it decides whether the entry counts.
+        if reaches_nested or not ln.endswith("/")
     ]
     # The fingerprint has to move when the CONTENT moves, not only when the file
     # set does: a token issued for one body must stop matching once that body has
@@ -1302,8 +1442,14 @@ def measure(cwd: str, kind: str, pathspecs: list[str]) -> tuple[list[str], str, 
     marks = []
     for n in names:
         try:
-            st = (root / n).stat()
-            marks.append(f"{n}\0{st.st_size}\0{st.st_mtime_ns}")
+            if n.endswith("/"):
+                # Only reachable when `reaches_nested` kept the entry, i.e. the
+                # stake is a directory git would not enumerate. Its content is
+                # still content, so the mark has to come from the filesystem.
+                marks.append(f"{n}\0{tree_mark(root / n)}")
+            else:
+                st = (root / n).stat()
+                marks.append(f"{n}\0{st.st_size}\0{st.st_mtime_ns}")
         except OSError:
             marks.append(f"{n}\0gone")
     # No summary for the untracked kinds: there is no diffstat to give, and the
@@ -1324,6 +1470,21 @@ def hunk_headers(cwd: str, paths: list[str]) -> list[str]:
             out.append(f"  {path}")
             out.extend(f"    {h}" for h in heads)
     return out
+
+
+def only_and(sep: str) -> bool:
+    """Whether `sep` joins with `&&` and carries no weaker operator.
+
+    A separator is a RUN of punctuation, so operators that ran together arrive
+    glued into one token: `)&&` closes a subshell and then chains, `&&(` chains
+    and then opens one. Grouping does not weaken the guard -- a failure before it
+    still stops what follows -- so parentheses are dropped before the comparison,
+    as is a newline directly after the `&&`, which continues the same conditional
+    onto the next line. What is left has to be the `&&` itself: a run carrying a
+    `;`, a `|` or a lone `&` reaches the git call on a branch where the `cd` may
+    not have run, which is the ambiguity the caller refuses.
+    """
+    return sep.translate(str.maketrans("", "", "()\n")) == "&&"
 
 
 def nearest_existing(path: Path) -> Path | None:
@@ -1440,7 +1601,12 @@ def resolve_cwd(
         # Substring rather than equality, because a separator now carries every
         # operator that ran together: `)&&` is one of these.
         conditional = "&&" in sep or "||" in sep
-        chained = all(commands[k][0] == "&&" for k in range(j + 1, idx + 1))
+        # `only_and` for the same reason, and the two have to agree: read one by
+        # substring and the other by equality, and a separator carrying a `(` is
+        # conditional-but-not-chained, which raises. The line then degrades from a
+        # measured refusal to a blind one -- it still denies, but the at-stake list
+        # and the content-bound token are gone.
+        chained = all(only_and(commands[k][0]) for k in range(j + 1, idx + 1))
         if conditional and not chained:
             raise Unmeasurable(
                 f"a conditional `{argv[0]}` leaves the directory ambiguous"
@@ -2027,11 +2193,22 @@ def main() -> None:
                 if existing is None:
                     continue
                 cwd, wider_than_reach = str(existing), True
+            elif not in_repository(cwd):
+                # Nothing here to lose: git resolves upwards and stops, so the
+                # command exits without touching a file. Checked on THIS side too,
+                # not only inside `nearest_existing`, and after the `git -C`
+                # folding above, which is what can move the answer either way.
+                # Without it a plain directory gets a refusal carrying git's own
+                # usage screen as its explanation, while the same command one
+                # directory-that-does-not-exist away is allowed -- one intent,
+                # two answers, and the one it gives is over a tree that holds
+                # nothing.
+                continue
             stake = stake_for(cwd, rest)
             if stake is None:
                 continue  # a covered verb, in a form that discards nothing
-            kind, pathspecs, narrowing_dropped = stake
-            names, summary, fingerprint = measure(cwd, kind, pathspecs)
+            kind, pathspecs, narrowing_dropped, reaches_nested = stake
+            names, summary, fingerprint = measure(cwd, kind, pathspecs, reaches_nested)
             if not names:
                 continue  # nothing at stake; let it run
             payload = "\0".join(
