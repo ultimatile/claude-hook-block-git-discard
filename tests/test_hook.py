@@ -58,6 +58,18 @@ def dirty(repo: Path, name: str = "a.txt", text: str = "DIRTY\n") -> Path:
     return repo / name
 
 
+def untracked(repo: Path, name: str = "untracked.txt") -> Path:
+    """A file git has never seen — the content a `clean` is measured against.
+
+    Distinct from `dirty`, which edits a file the `repo` fixture committed: that
+    one is reachable through `git diff`, this one only through `ls-files
+    --others`, and the two travel different branches of `measure`.
+    """
+    target = repo / name
+    target.write_text("PRECIOUS\n")
+    return target
+
+
 def tracked_dirty(repo: Path, name: str, message: str = "add") -> Path:
     """Commit `name` into `repo`, then change it — a tracked file with work in it.
 
@@ -359,8 +371,8 @@ def test_an_unquoted_mention_of_git_is_refused(
 
     Unquoted, this is textually indistinguishable from the parse gaps the test
     exists to catch — a covered verb sitting in the line with no call read from
-    it. Telling them apart is the parsing that kept going wrong, so the crude
-    test wins and the refusal costs a token.
+    it. Telling the two apart is the parsing this hook declines to attempt, so
+    the crude test wins and the refusal costs a token.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
@@ -381,7 +393,7 @@ def test_git_beside_a_verb_under_an_unread_wrapper_is_refused(
 
     Each is `git` next to a covered verb with no call read from it — which is
     also the exact signature of a parse gap. Telling the two apart is the parsing
-    that kept going wrong, so the backstop does not try.
+    this hook declines to attempt, so the backstop does not try.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
@@ -451,9 +463,11 @@ def test_the_inert_guard_does_not_cross_a_line_break(
     """A newline ends a command as surely as a `;` does — and, being whitespace,
     never survives into a word for the separator test to find.
 
-    Carried across lines, one inert git call disarmed the backstop for everything
-    after it: `git commit -m "wip"` then `sh -c 'git reset --hard'` was allowed,
-    and destroyed the tree. Every allowlist entry carried the same hole.
+    Carried across lines, one inert git call would disarm the backstop for
+    everything after it, so `git commit -m "wip"` then
+    `sh -c 'git reset --hard'` would run its reset uncounted. Every allowlist
+    entry opens the same hole, which is why the guard is cleared per line
+    rather than per entry.
     """
     dirty(repo)
     command = f"{first}\nsh -c 'git reset --hard'"
@@ -469,9 +483,9 @@ def test_a_backslash_inside_a_comment_does_not_join_the_next_line(
     """A backslash inside a comment is ordinary text to the shell.
 
     `echo one # note \\` then `echo two` prints both — verified in bash and zsh.
-    Joining the lines first made the second one part of the comment and deleted
-    it outright, so the discard was never seen at all: the whole line read as
-    commented out, and the reset ran.
+    Joining the lines before comments come off would make the second one part
+    of the comment and delete it outright: the whole line reads as commented
+    out, nothing is left for the discard to be seen in, and the reset still runs.
     """
     dirty(repo)
     command = f"{first} # note \\\ngit reset --hard"
@@ -502,15 +516,15 @@ def test_a_name_that_resolves_only_at_run_time_is_the_backstop_floor(
 ) -> None:
     """The limit of the guarantee, pinned so it reads as known rather than missed.
 
-    The backstop reads a covered call out of the words, so both halves have to be
-    there as words. A command name that becomes `git` only at run time, and a
-    verb that becomes `checkout` only at run time — which is what an alias is —
-    are invisible to both parsers. Resolving either means reading the environment
-    or the config the command will run under, and this hook reads neither.
+    Both halves of the call have to be WRITTEN in the text. A command name that
+    becomes `git` only at run time, and a verb that becomes `checkout` only at
+    run time — which is what an alias is — are invisible to both parsers.
+    Resolving either means reading the environment or the config the command will
+    run under, and this hook reads neither.
 
     `$(echo git) reset --hard` is deliberately NOT on this list: the word `git`
-    is literally present there, so peeling the clinging characters finds it. Only
-    a name that is nowhere in the text falls through.
+    is literally present there, so the scan over character positions finds it.
+    Only a name that is nowhere in the text falls through.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
@@ -1578,10 +1592,10 @@ def test_a_directory_this_line_creates_inside_a_repository_is_measured(
     upwards.
 
     A command run in a directory this line creates still reaches the repository
-    above it, whose content long predates the line: `mkdir -p d && cd d && git
-    reset --hard` was allowed on that reading and destroyed the enclosing tree.
-    So the measurement falls back to the nearest directory that already exists,
-    and passes only when that one is in no repository either.
+    above it, whose content long predates the line, so reading the new path alone
+    lets `mkdir -p d && cd d && git reset --hard` take the enclosing tree. The
+    measurement therefore falls back to the nearest directory that already
+    exists, and passes only when that one is in no repository either.
 
     The cost is a refusal when a clone lands INSIDE a dirty repository, since
     nothing here can tell in advance whether the new directory will be a
@@ -1598,8 +1612,8 @@ def test_a_directory_this_line_creates_inside_a_repository_is_measured(
 def test_the_two_spellings_of_a_branch_switch_agree(
     deny_reason: HookRunner, repo: Path
 ) -> None:
-    """`switch` clears without the repository and `checkout` cannot, so the two
-    used to disagree on the same intent purely by spelling."""
+    """`switch` clears without the repository and `checkout` cannot, so nothing
+    but this test keeps one intent from being decided two ways by spelling."""
     dirty(repo)
     for verb in ("checkout", "switch"):
         command = (
@@ -1626,14 +1640,116 @@ def test_a_cd_that_will_fail_passes_when_that_directory_holds_nothing(
     assert deny_reason(HOOK, "cd typo; git reset --hard", payload_cwd=repo) is None
 
 
-def test_git_dash_c_into_a_missing_directory_is_left_alone(
-    deny_reason: HookRunner, repo: Path
+@pytest.mark.parametrize(
+    ("situation", "cd_form", "dash_c_form"),
+    [
+        pytest.param(
+            "never created",
+            "cd no-such-dir && git reset --hard",
+            "git -C no-such-dir reset --hard",
+            id="never-created",
+        ),
+        pytest.param(
+            "created by this same line",
+            "mkdir -p d && cd d && git reset --hard",
+            "mkdir -p d && git -C d reset --hard",
+            id="created-on-this-line",
+        ),
+        pytest.param(
+            "already there",
+            "mkdir -p d; cd d && git reset --hard",
+            "mkdir -p d; git -C d reset --hard",
+            id="already-there",
+        ),
+    ],
+)
+def test_the_two_ways_of_running_it_over_there_answer_alike(
+    deny_reason: HookRunner, repo: Path, situation: str, cd_form: str, dash_c_form: str
 ) -> None:
-    """`git -C <missing>` exits 128 without opening anything."""
+    """`cd <dir> && git <verb>` and `git -C <dir> <verb>` are one intent, and a
+    hook deciding them differently is fail-open behind whichever spelling it does
+    not look at.
+
+    The middle row is the one measured going wrong: with the directory created
+    earlier on the same line, git resolves upwards out of it into the enclosing
+    repository and takes the worktree — which the `cd` spelling refused and the
+    `-C` spelling did not.
+
+    The first row is the price. Nothing is created there and git exits 128, so
+    both spellings now refuse a line that could not have destroyed anything: the
+    same override token the `cd` spelling has always cost, paid by both. A
+    directory that will never exist cannot be told apart from one this line is
+    about to create, and only one of those two readings is safe to be wrong
+    about.
+    """
     dirty(repo)
-    assert (
-        deny_reason(HOOK, "git -C no-such-dir reset --hard", payload_cwd=repo) is None
+    cd_reason = deny_reason(HOOK, cd_form, payload_cwd=repo)
+    dash_c_reason = deny_reason(HOOK, dash_c_form, payload_cwd=repo)
+    assert (cd_reason is None) == (dash_c_reason is None), (
+        f"{situation}: cd={cd_reason!r} -C={dash_c_reason!r}"
     )
+    assert cd_reason is not None, situation
+    # Not just THAT both refuse, but that they refuse about the same thing. The
+    # widening caveat is the part that differs between a directory measured
+    # exactly and one measured through its nearest existing ancestor, so two
+    # spellings that disagree on it are answering about different trees while a
+    # both-refused check stays green.
+    caveat = "nearest one that does was measured"
+    assert (caveat in cd_reason) == (caveat in dash_c_reason), (
+        f"{situation}: the two spellings disagree on how wide the answer is"
+    )
+    assert ("a.txt" in cd_reason) == ("a.txt" in dash_c_reason), (
+        f"{situation}: the two spellings name different content at stake"
+    )
+
+
+@pytest.mark.parametrize(
+    ("cd_form", "dash_c_form"),
+    [
+        pytest.param(
+            "mkdir -p r && cd r && git reset --hard",
+            "mkdir -p r && git -C r reset --hard",
+            id="created-on-this-line",
+        )
+    ],
+)
+def test_running_it_over_there_from_outside_any_repository_is_left_alone(
+    deny_reason: HookRunner, tmp_path: Path, cd_form: str, dash_c_form: str
+) -> None:
+    """The other end of the fallback, and the reason it is not simply "refuse".
+
+    Outside any repository there is nothing above for git to resolve up into, so
+    whatever this line puts at the target is either a repository of its own --
+    whose content the line just created -- or not a repository at all. Neither
+    holds content that existed when the hook decided, so both spellings pass.
+
+    Without this row the fallback's None branch is reached by no test at all, and
+    a change making it refuse instead would cost every `mkdir && cd && git init`
+    an override token with nothing behind it.
+    """
+    outside = tmp_path / "plain"
+    outside.mkdir()
+    assert deny_reason(HOOK, cd_form, payload_cwd=outside) is None, cd_form
+    assert deny_reason(HOOK, dash_c_form, payload_cwd=outside) is None, dash_c_form
+
+
+def test_a_later_move_on_the_same_line_is_still_followed(
+    deny_reason: HookRunner, repo: Path, tmp_path: Path
+) -> None:
+    """The walk answers about where it ENDS, not where it first met a directory
+    that does not exist yet.
+
+    Stopping at the first not-yet-created target abandons every move after it.
+    The payload repository here is CLEAN and the work is in another one, so an
+    answer given at `cd d` describes a tree with nothing at stake while the line
+    lands in the other repository and takes its uncommitted content.
+    """
+    other = init(tmp_path / "other")
+    (other / "f.txt").write_text("v1\n")
+    commit_all(other)
+    dirty(other, "f.txt")
+    command = f"mkdir -p d && cd d && cd {other} && git reset --hard"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
 
 
 def test_content_moved_in_by_the_same_line_is_not_protected(
@@ -1791,9 +1907,10 @@ def test_a_redirection_is_not_a_command_boundary(
 ) -> None:
     """A redirection splits nothing and its file descriptor is not an argument.
 
-    Read as a boundary, `git clean -fd 2>/dev/null` left `2` behind as clean's
+    Read as a boundary, `git clean -fd 2>/dev/null` leaves `2` behind as clean's
     pathspec — narrowing the measurement to nothing — and `git 2>&1 reset --hard`
-    lost the verb entirely. Both were allowed, and both destroy content.
+    loses the verb entirely. Both lines destroy content, and neither reading of
+    them measures any of it.
     """
     dirty(repo)
     reason = deny_reason(HOOK, command, payload_cwd=repo)
@@ -1809,9 +1926,9 @@ def test_a_digit_pathspec_is_not_read_as_a_file_descriptor(
     descriptor or a pathspec survives only as ADJACENCY in the raw text.
 
     Deciding it after tokenizing has to guess, and guessing "a digit before a
-    redirection is a descriptor" throws the pathspec away: `git checkout -- 2 >
-    log` then measured nothing and was allowed, over a repository holding a file
-    named `2`.
+    redirection is a descriptor" throws the pathspec away: over a repository
+    holding a file named `2`, `git checkout -- 2 > log` then measures nothing
+    while discarding that file.
     """
     tracked_dirty(repo, name, "digit")
     reason = deny_reason(HOOK, f"git checkout -- {name} > log", payload_cwd=repo)
@@ -1942,7 +2059,7 @@ def test_a_verb_inside_a_substitution_is_not_masked_away(
     at its parens, and that is worth doing — but the same collapse applied to the
     mention test took the verb out of view, and `echo $(git reset --hard)` was
     allowed while discarding the tree. The tokenizer needs the mask; the mention
-    test splits on whitespace and peels the clinging characters, so it does not.
+    test reads the name off the characters around it, so it does not.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
@@ -2273,3 +2390,439 @@ def test_the_unmeasured_refusal_pops_once_per_push(
     reason = deny_reason(HOOK, "popd; git reset --hard", payload_cwd=repo)
     assert reason is not None
     assert "once per push" in reason, reason
+
+
+CL = "cl" + "ean"
+
+
+# --- shapes measured against git, in both directions ------------------------
+#
+# Every command below is one that was run for real in a throwaway repository,
+# with the content compared before and after, so each row asserts what git does
+# rather than what the shape looks like. Most rows are refusals: content that
+# becomes unrecoverable, which the hook must not let past. The converse rows are
+# here for the same reason -- a shape that destroys nothing must not be refused
+# either, and only running it says which of the two a shape is.
+
+
+def test_a_forced_orphan_checkout_is_measured(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`--orphan` takes a new branch NAME, exactly as `-b` and `-B` do, so it
+    belongs in the set that says so. Left out of it, the name reaches `paths_of`,
+    resolves as no ref, narrows the measurement to a file that does not exist and
+    reports nothing at stake -- while `git checkout -f --orphan fresh` discards
+    the whole tree."""
+    dirty(repo)
+    assert (
+        deny_reason(HOOK, "git checkout -f --orphan fresh", payload_cwd=repo)
+        is not None
+    )
+    assert (
+        deny_reason(HOOK, "git checkout --force --orphan fresh", payload_cwd=repo)
+        is not None
+    )
+
+
+def test_an_abbreviated_orphan_is_read_as_orphan(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """git's parse-options takes any unambiguous abbreviation, so `--orph` is
+    `--orphan`. Measured: `git checkout -f --orph fresh` exits 0 and takes the
+    tree, exactly as the full spelling does.
+
+    This is the only thing that exercises `abbreviates`. `--orphan` is kept out
+    of `LONG_OPTS` on purpose, so the abbreviation is resolved at its one call
+    site rather than by the general expansion -- a site nothing else reaches,
+    and A1 cannot reach either, because its matrix is built from `git checkout
+    -h`, which prints full spellings only."""
+    dirty(repo)
+    assert (
+        deny_reason(HOOK, "git checkout -f --orph fresh", payload_cwd=repo) is not None
+    )
+
+
+def test_an_unforced_orphan_checkout_keeps_the_tree_and_is_allowed(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The other half, and the reason the fix is not simply "refuse --orphan":
+    measured, `git checkout --orphan fresh` leaves every uncommitted change in place.
+    Refusing it would be a refusal with nothing behind it."""
+    dirty(repo)
+    assert deny_reason(HOOK, "git checkout --orphan fresh", payload_cwd=repo) is None
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        pytest.param(
+            'git -c user.name="John Doe" gitreset --hard', id="quoted-c-value"
+        ),
+        pytest.param("git -c user.name='John Doe' gitreset --hard", id="single-quoted"),
+        pytest.param("git -C 'a dir' gitreset --hard", id="quoted-C-operand"),
+        pytest.param("\\git gitreset --hard", id="escaped-command-name"),
+    ],
+)
+def test_a_quoted_global_does_not_hide_the_next_call_from_the_backstop(
+    deny_reason: HookRunner, repo: Path, first: str
+) -> None:
+    """`mentions` reads the words after a name by splitting on whitespace, so a
+    quoted option value arrives as two words and `-c` consumes only the first --
+    leaving the verb one position past where the subcommand test looks. Counted
+    that way the line scores exactly what the real parser measures, which is what
+    silences the backstop while the second call takes the tree. The look-ahead is
+    what this pins.
+
+    The tracked tree is left CLEAN on purpose: the first call has to be measured
+    and found harmless, or it refuses on its own and the second never matters.
+    """
+    (repo / "a dir").mkdir()
+    untracked(repo)
+    command = first.replace("gitreset", "git reset") + f"; sh -c 'git {CL} -fdx'"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        pytest.param("git commit -q --allow-empty -m $'don\\'t'", id="ansi-c-quote"),
+        pytest.param("git log -1 \\\\", id="escaped-backslash"),
+        pytest.param("git log -1 \\\\\\\\", id="two-escaped-backslashes"),
+    ],
+)
+def test_a_line_boundary_survives_an_escape_the_shell_reads_differently(
+    deny_reason: HookRunner, repo: Path, first: str
+) -> None:
+    """Two ways to lose the newline after an INERT call, and the guard with it.
+
+    `$'...'` is ANSI-C quoting, where `\\'` is an escaped apostrophe and the word
+    ends at the closing quote. Read as an ordinary single quote it closes at the
+    `\\'` instead and reopens at the `'` after it, so the quote spans the newline.
+    A `\\\\` is an escaped backslash and the newline after it ends the command;
+    read as a continuation it joins the two lines. Either way the second line
+    lands inside the first call's argument list, and the first call being inert
+    means nothing on the second line is counted at all -- so the comparison in
+    `main` is `0 > 0` and the discard runs.
+
+    The bare-newline spellings of these same two lines are refused, which is what
+    makes this a line-boundary bug rather than a guard one.
+    """
+    dirty(repo)
+    untracked(repo)
+    command = f"{first}\nsh -c 'git {CL} -fdx'"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+@pytest.mark.parametrize("run", [1, 3, 5])
+def test_an_odd_backslash_run_really_does_join_and_costs_no_refusal(
+    deny_reason: HookRunner, repo: Path, run: int
+) -> None:
+    """The other half of the parity rule, and the half that would cost usability.
+
+    An odd run is an escaped backslash for each pair plus one that escapes the
+    newline, so the shell JOINS the two lines and the second one becomes
+    arguments to the first command. Measured at runs of 1, 3 and 5: the `clean`
+    never runs and nothing is destroyed, so a refusal here would buy nothing.
+
+    Pinned alongside the even-run cases above because the fix is a parity test.
+    A regex that joins on any backslash refuses these; one that never joins lets
+    the even runs destroy. Only a test in each direction says which side a change
+    fell off.
+    """
+    dirty(repo)
+    untracked(repo)
+    command = "git log -1 " + "\\" * run + f"\nsh -c 'git {CL} -fdx'"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
+
+
+def test_a_continuation_keeps_the_backslashes_that_are_not_the_continuation() -> None:
+    """The joined text itself, which no decision above depends on.
+
+    An odd run of three is one escaped backslash plus the one that joins, so the
+    joined line still holds a literal `\\`. The decision is the same either way
+    -- both spellings leave the second line as arguments to an inert call -- so
+    this is asserted on the text rather than on a refusal, which is the only
+    place the difference is observable at all.
+    """
+    from block_git_discard.hook import prepared
+
+    assert prepared("echo a\\\\\\\nb", mask=False) == "echo a\\\\ b"
+    assert prepared("echo a\\\nb", mask=False) == "echo a b"
+    assert prepared("echo a\\\\\nb", mask=False) == "echo a\\\\\nb"
+
+
+def test_a_git_global_this_hook_does_not_know_is_unmeasurable(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`--icase-pathspecs` makes a pathspec match case-insensitively at run time,
+    so `readme.MD` reaches `README.md` while this hook's own
+    `git diff --name-only -- readme.MD` matches nothing and reports an empty tree
+    at stake. Measured: the file is discarded and the command exits 0.
+
+    The fix is not a row for this one flag. git's global surface grows, so the
+    set is spelled the other way round -- the globals known to change nothing are
+    listed, and everything else moves the ground under the measurement. An
+    omission from THAT list costs one override token, which is the direction this
+    hook can afford to be wrong in.
+    """
+    tracked_dirty(repo, "README.md", "readme")
+    command = "git --icase-pathspecs checkout -- readme.MD"
+    reason = deny_reason(HOOK, command, payload_cwd=repo)
+    assert reason is not None, command
+    # The reason names the flag actually present. A message naming a fixed pair
+    # of options instead would be describing a command the reader did not run,
+    # and nothing about the refusal would tell them which token to look at.
+    assert "--icase-pathspecs" in reason, reason
+
+
+@pytest.mark.parametrize("flag", ["--no-pager", "--paginate", "-p", "-P"])
+def test_a_git_global_known_to_change_nothing_still_measures(
+    deny_reason: HookRunner, repo: Path, flag: str
+) -> None:
+    """The bound on that widening, in the direction that would cost usability.
+    These four change what git PRINTS and nothing it acts on, so a narrowed
+    discard behind one is still measured rather than refused wholesale -- and the
+    reason still names the file at stake."""
+    dirty(repo)
+    reason = deny_reason(HOOK, f"git {flag} checkout -- a.txt", payload_cwd=repo)
+    assert reason is not None
+    assert "a.txt" in reason, reason
+
+
+def test_an_escaped_apostrophe_does_not_merge_the_next_line(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """Read as an opening quote, the escaped apostrophe never closes, so the
+    newline stops ending the command and the next line merges into the `commit`
+    argument -- carrying the INERT_SUBCOMMANDS guard with it. The double-quoted
+    spelling of the same message carries no such escape, so without this the two
+    spellings of one message decide differently."""
+    untracked(repo)
+    command = "git commit -q --allow-empty -m don\\'t\n" + f"sh -c 'git {CL} -fdx'"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None
+
+
+def test_the_clean_force_config_is_read_out_of_the_argv(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`git clean` refuses without `-f` unless this setting says otherwise, and
+    then a bare `git clean -d` deletes untracked directories. The setting is a
+    token in the argv the hook already tokenizes, so reading it needs no query
+    and no reproduction of git's normalization -- the ground on which the header
+    leaves the config generally uncovered."""
+    untracked(repo)
+    command = f"git -c clean.requireForce=false {CL} -d"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
+def test_every_false_spelling_of_the_clean_force_config_counts(
+    deny_reason: HookRunner, repo: Path, value: str
+) -> None:
+    """Measured: each of these lets `git clean -d` delete untracked content. The
+    key is compared case-insensitively too, as git compares it."""
+    untracked(repo)
+    command = f"git -c clean.requireforce={value} {CL} -d"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+def test_a_true_clean_force_config_leaves_the_refusal_in_place(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The other direction, so the waiver is not read as "any -c mentioning the
+    key". Measured: git still refuses, so nothing is at stake and the hook has no
+    business interrupting."""
+    untracked(repo)
+    command = f"git -c clean.requireForce=true {CL} -d"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is None
+
+
+# --- the command name does not have to be a word of its own -----------------
+
+R = "re" + "set"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(f"x=$(git {R} --hard)", id="assignment"),
+        pytest.param(f"export OUT=$(git {CL} -fdx)", id="export-assignment"),
+        pytest.param(f"readonly x=$(git {R} --hard)", id="readonly-assignment"),
+        pytest.param(f"a=1 b=$(git {R} --hard) true", id="assignment-prefix"),
+        pytest.param(f"echo a$(git {R} --hard)", id="glued-to-a-word"),
+        pytest.param(f"x=`git {R} --hard`", id="backticks-after-assignment"),
+        pytest.param(f"echo ${{x:-$(git {R} --hard)}}", id="parameter-default"),
+        pytest.param(f"cat <(git {R} --hard)", id="process-substitution"),
+        pytest.param(f"diff <(git {CL} -fdx) /dev/null", id="process-subst-operand"),
+        pytest.param(f"cat > /dev/null < <(git {R} --hard)", id="redirected-in"),
+    ],
+)
+def test_a_name_that_does_not_begin_its_word_is_still_read(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """Each of these takes a worktree, and `mentions` is the only counter that
+    can see it.
+
+    A reading that splits on whitespace and peels the clinging characters off
+    both ENDS of a word reaches `$(git` only when the `$(` opens the word. One
+    character in front of it and the reduction stops, so `x=$(git`, `a$(git` and
+    `<(git` go unread; the real parse masks the substitution and recognizes
+    nothing in them either, which makes the comparison in `main` `0 > 0` and lets
+    the line run. Finding the name by its neighbours is what closes that.
+    """
+    dirty(repo)
+    untracked(repo)
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+def test_a_path_qualified_name_is_still_read(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`/usr/bin/git` is the same git, and its basename is what says so. A `/` in
+    FRONT of the name is a path qualifier, so the guard on the left lets it
+    through — see the `git/lfs` case below for the other side.
+
+    Each is wrapped in a substitution ON PURPOSE. Bare, the real parser reads the
+    path-qualified name perfectly well and refuses on the measurement, so the
+    assertion would hold with the backstop's guard broken — it would be pinning
+    the wrong layer. Inside `$(...)` the real parse masks the call and recognizes
+    nothing, which leaves `mentions` as the only thing that can produce a refusal.
+    """
+    dirty(repo)
+    for command in (f"x=$(/usr/bin/git {R} --hard)", f"x=$(./git {R} --hard)"):
+        assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(f"mygit {R} --hard", id="suffix-of-another-name"),
+        pytest.param(f"legit {R} --hard", id="contains-the-letters"),
+        pytest.param(f"digit {R} --hard", id="ends-with-the-letters"),
+        pytest.param(f"git-lfs {R} --hard", id="hyphenated-sibling"),
+        pytest.param(f"gitk {R} --hard", id="prefix-of-another-name"),
+        pytest.param(f"cat .gitignore && echo {R}", id="dotfile-name"),
+        # The rest of `NAME_CHAR`, one member per case. The docstring below names
+        # letter, digit, `_`, `.`, `+` and `-` as the class, and a member left
+        # unexercised is a member that could be dropped from it with every test
+        # still green -- which is how `mygit` becomes a covered call.
+        pytest.param(f"git2 {R} --hard", id="digit-behind"),
+        pytest.param(f"2git {R} --hard", id="digit-in-front"),
+        pytest.param(f"git_x {R} --hard", id="underscore-behind"),
+        pytest.param(f"x_git {R} --hard", id="underscore-in-front"),
+        pytest.param(f"git+x {R} --hard", id="plus-behind"),
+        pytest.param(f"x+git {R} --hard", id="plus-in-front"),
+        # A `/` BEHIND the name makes the `git` a directory component, so the
+        # name is whatever follows it. This is the other half of the basename
+        # rule the path-qualified test above pins, and the two guards differ on
+        # `/` for exactly that reason.
+        pytest.param(f"git/lfs {R} --hard", id="git-as-a-directory"),
+        pytest.param(f"a/git/b {R} --hard", id="git-as-an-inner-directory"),
+    ],
+)
+def test_a_name_that_merely_contains_the_letters_is_not_read_as_git(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """The bound on the widening, pinned in the direction that would cost.
+
+    Finding the name by its neighbours is what makes `x=$(git` readable, and the
+    same move would read `mygit` as `git` if the neighbour class were wrong. The
+    class is spelled from the characters a command NAME may hold, so a letter,
+    digit, `_`, `.`, `+` or `-` on either side means this is a different command.
+    """
+    dirty(repo)
+    assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
+
+
+def test_a_quoted_covered_verb_stays_inert(deny_reason: HookRunner, repo: Path) -> None:
+    """`commit` does not run its arguments, so a covered verb written inside its
+    message is text. Nothing separates the two names here, so the guard carries.
+
+    Paired with the test below: the two lines differ by one `(`, and that one
+    character is the whole difference between text and a call."""
+    dirty(repo)
+    command = f'git commit -q --allow-empty -m "git {R} --hard"'
+    assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
+
+
+def test_a_substitution_inside_an_inert_argument_is_not_inert(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """What is written inside a substitution RUNS, before the commit it is quoted
+    into has begun. The `(` between the two names ends the call the guard belonged
+    to, which is why the span between candidates -- not the word either sits in --
+    is what the guard is cleared from."""
+    dirty(repo)
+    command = f"git commit -q --allow-empty -m x$(git {R} --hard)"
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(f"git log -1 git) {R} --hard", id="after-a-log"),
+        pytest.param(
+            f"git commit -q --allow-empty -m m git) {R} --hard", id="after-a-commit"
+        ),
+        pytest.param("git log -1 git) checkout -- a.txt", id="checkout-verb"),
+    ],
+)
+def test_a_separator_behind_the_name_still_ends_the_previous_command(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """The span the guard is cleared from runs to the end of the name's own token,
+    not to the name, and this is what needs it.
+
+    A `)` sitting behind a bare `git` is what ends the previous command, and a
+    span measured only up to the name never contains it: the guard survives into
+    a call that is not its own and the count falls. Falling is the one direction
+    this backstop must never move in, so the span runs through the name's whole
+    token — the only variant that counts no less than a reading which tests the
+    whole word.
+
+    These lines are malformed shell, which is the point: the guard cannot depend
+    on its input being well formed, and refusing a line the shell would reject
+    costs nothing at all.
+    """
+    dirty(repo)
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+def test_the_first_name_on_a_line_needs_no_previous_candidate(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The span the guard is cleared from runs from the start of the line for the
+    first name on it, so a subshell opened immediately before that name is read
+    the same as one opened between two names."""
+    dirty(repo)
+    assert deny_reason(HOOK, f"( git {R} --hard )", payload_cwd=repo) is not None
+    assert deny_reason(HOOK, f"(git {R} --hard)", payload_cwd=repo) is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(f"git bisect {R}", id="bisect"),
+        pytest.param(f"git status --short {R}", id="status-then-a-verb"),
+    ],
+)
+def test_an_unreadable_subcommand_position_costs_a_refusal(
+    deny_reason: HookRunner, repo: Path, command: str
+) -> None:
+    """The price of the look-ahead, pinned so it stays a known cost.
+
+    Neither line discards anything, and the first is one an agent does type. They
+    are refused because the subcommand position holds a word this hook neither
+    covers nor knows to be inert, which is ALSO what a torn-apart option value
+    looks like — `git -c user.name="John Doe" reset --hard` splits so that the
+    verb lands one position further along. Giving up on that position instead of
+    looking ahead from it lets a worktree go, so the refusal is bought
+    deliberately.
+
+    `README.md` lists both in its false-positive table. This test is what keeps
+    that list from going stale in the direction that matters: narrowing the
+    look-ahead allows these again, and the README would then promise a refusal
+    the hook does not make.
+    """
+    dirty(repo)
+    assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command

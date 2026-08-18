@@ -13,8 +13,9 @@ error and the command runs anyway, so an install that looks clean at every step
 produces a guard that is silently not guarding -- the exact outcome the hook
 exists to prevent, arrived at through its own packaging.
 
-It was reachable: the repository's default branch carried this `pyproject.toml`
-before it carried the package.
+Nothing about that outcome announces itself: a tree carrying this
+`pyproject.toml` without the package it declares installs, resolves its console
+script, and guards nothing.
 """
 
 from __future__ import annotations
@@ -24,8 +25,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from conftest import PROJECT_ROOT
 
 
 @pytest.fixture(scope="module")
@@ -58,12 +58,24 @@ def test_the_wheel_carries_the_package(wheel: Path) -> None:
 
 @pytest.mark.parametrize(
     "module",
-    ["block_git_discard/__init__.py", "block_git_discard/hook.py"],
+    [
+        "block_git_discard/__init__.py",
+        "block_git_discard/hook.py",
+        "block_git_discard/shell_tokens.py",
+    ],
 )
 def test_the_wheel_carries_what_the_entry_point_needs(wheel: Path, module: str) -> None:
     """`block-git-discard = "block_git_discard:main"` reaches `main` through
-    `__init__`, which imports it from `hook`. A wheel missing either resolves the
-    console script and then fails at import time, which is a non-zero exit."""
+    `__init__`, which imports it from `hook`, which imports `tokenize` and
+    `is_separator` from `shell_tokens`. A wheel missing ANY of the three resolves
+    the console script and then fails at import time -- a non-zero exit, which
+    the harness reports as a non-blocking error before running the command.
+
+    The whole import chain is listed rather than its first two links, because a
+    link left off this list is checked by nothing: the wheel is built from
+    `[tool.hatch.build.targets.wheel]`, and a packaging change that drops a
+    module produces exactly the failure above with every other test still
+    green."""
     assert module in zipfile.ZipFile(wheel).namelist()
 
 
