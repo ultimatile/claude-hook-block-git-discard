@@ -37,8 +37,6 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 
 class HookRunner(Protocol):
-    """(hook, command[, extra_env][, cwd][, payload_cwd]) -> deny reason, or None."""
-
     def __call__(
         self,
         hook: str,

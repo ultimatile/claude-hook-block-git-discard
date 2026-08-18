@@ -648,9 +648,7 @@ def test_a_pathspec_reaches_into_an_untracked_directory(
 def test_a_clean_with_no_pathspec_leaves_an_untracked_directory_alone(
     deny_reason: HookRunner, repo: Path
 ) -> None:
-    """The other side of that boundary, without which the fix over-refuses.
-
-    With neither `-d` nor a pathspec git leaves the directory whole, so the
+    """With neither `-d` nor a pathspec git leaves the directory whole, so the
     collapsed entry really is out of reach and a refusal here would be in the way
     over nothing.
     """
