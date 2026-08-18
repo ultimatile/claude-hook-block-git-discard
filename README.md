@@ -105,6 +105,12 @@ reproducing git's own worktree normalization for no practical gain.
 guarantee: everything stash touches stays reachable from a ref, so it is not the
 irreversible kind of loss this guards against.
 
+`source` and `.` are not followed. They execute a FILE, which this hook does not
+read, so a `cd` inside one moves the shell without being seen — the same run-time
+resolution that puts an alias and a shell function out of scope. Refusing every
+`. .venv/bin/activate && …` would tax a line that is typed constantly, over a
+directory change that is almost never there, so the gap is named instead.
+
 **The guarantee is narrower than "never lets a destructive command through", and
 the difference matters.** The hook reads the command as text; a name that only
 resolves to `git` at run time (`$GIT reset --hard`) or a verb that does the same
@@ -112,6 +118,13 @@ resolves to `git` at run time (`$GIT reset --hard`) or a verb that does the same
 
 > No shape it can read is under-refused, and a shape it cannot read is refused
 > rather than passed.
+
+That sentence quantifies over "shape it can read", and [SCOPE.md](SCOPE.md) is
+where that set is written down and frozen — along with the rule that decides each
+answer, which is execution rather than judgement: run the command in a throwaway
+repository and see whether content that existed is gone. Without the enumeration
+the guarantee cannot be checked, and every newly imagined command reads as the
+goal moving instead of as a defect against a fixed target.
 
 That second half is why it fails **closed**. A covered verb sitting in the text
 with no call the parser could account for is the exact signature of a parser gap,
