@@ -487,9 +487,12 @@ def strip_comments(command: str) -> str:
     out: list[str] = []
     prev = " "  # the start of the line counts as a word boundary
     skipping = False
-    # `strict` states the invariant rather than trusting it: `mask_quoted` emits one
-    # character per character read, so a length that ever disagrees is a defect in
-    # it, and a silent `zip` would truncate the command instead of saying so.
+    # `strict` states the invariant `mask_quoted` holds -- one character out per
+    # character in -- so a disagreement stops here instead of silently truncating
+    # the command. It is NOT a loud failure at run time: this runs inside `main`'s
+    # pre-recognition handler, which returns and therefore ALLOWS, and which the
+    # `mentions` backstop is not reached from. So the length is the mask's
+    # invariant to keep, and this only makes a break in it visible under test.
     for original, seen in zip(command, masked, strict=True):
         if skipping:
             # A comment runs to the end of its LINE, and this hook is handed
@@ -1529,12 +1532,22 @@ def hunk_headers(cwd: str, paths: list[str]) -> list[str]:
 # run the builtin.
 SHELL_WRAPPERS = ("builtin", "command")
 
-# Constructs whose purpose is to execute text or a file this hook does not read. A
-# `cd` inside one is invisible here and moves the shell anyway. A shell FUNCTION
-# that changes directory stays outside this list, and outside what the hook can
-# read at all -- the set of ways to name a `cd` indirectly has no boundary to
-# enumerate, which the README already says of a verb reached through an alias.
-RUNS_TEXT = ("eval", "source", ".")
+# Text this hook does not read, executed in the CURRENT shell, so a `cd` inside it
+# is invisible here and moves the shell anyway.
+#
+# `source` and `.` are deliberately NOT here. They read a FILE, which puts them
+# with the other run-time resolutions the README declares out of scope -- an alias,
+# a shell function, a name that only becomes `git` once the shell expands it -- and
+# refusing every one of them taxes `. .venv/bin/activate && ...`, a line agents
+# type constantly. A `cd` inside such a file is not followed; that is the cost, and
+# it is named rather than paid for by everyone.
+RUNS_TEXT = ("eval",)
+
+# `command`'s options are a closed set, which is what makes them safe to read
+# rather than refuse: POSIX gives it `-p`, `-v` and `-V`, and only `-p` still runs
+# the command. `builtin` takes none.
+WRAPPER_OPTS_THAT_RUN = ("-p",)
+WRAPPER_OPTS_THAT_REPORT = ("-v", "-V")
 
 
 def unwrapped(argv: list[str]) -> list[str]:
@@ -1544,18 +1557,26 @@ def unwrapped(argv: list[str]) -> list[str]:
     spellings, and each leaves the shell in the new directory: the measurement was
     then taken in a tree the git call never ran in, which reports nothing at stake.
 
-    An option after the wrapper is refused rather than skipped. `command -v cd`
-    tests for the builtin instead of running it, so skipping to the `cd` would read
-    a move that does not happen -- and guessing which options take a value is the
-    same surface that has produced fail-opens here twice.
+    A reporting option comes back UNPEELED, which the caller reads as "not a
+    directory change" -- `command -v cd` says where the name resolves and runs
+    nothing, so following it would read a move that does not happen. An option
+    outside the closed set is refused instead of skipped, because guessing which
+    ones take a value is the surface that has produced fail-opens here twice.
     """
     out = list(argv)
     while len(out) > 1 and out[0] in SHELL_WRAPPERS:
-        out = out[1:]
-        if out[0].startswith("-"):
-            raise Unmeasurable(
-                f"`{argv[0]}` with an option is a form this hook does not read"
-            )
+        rest = out[1:]
+        while rest and rest[0].startswith("-"):
+            if rest[0] in WRAPPER_OPTS_THAT_REPORT:
+                return argv
+            if rest[0] not in WRAPPER_OPTS_THAT_RUN:
+                raise Unmeasurable(
+                    f"`{out[0]} {rest[0]}` is a form this hook does not read"
+                )
+            rest = rest[1:]
+        if not rest:
+            return argv
+        out = rest
     return out
 
 
@@ -1668,18 +1689,12 @@ def resolve_cwd(
         sep, argv = commands[j]
         if not argv:
             continue
-        if argv[0] in RUNS_TEXT:
-            # The `cd` is inside text or a file this hook does not read, and it
-            # moves the shell all the same -- `eval "cd <repo>" && git reset
-            # --hard` runs the reset in that repository, measured here as the
-            # payload's own tree, found clean, and allowed. What the directory
-            # became is unknown rather than unchanged, which is a refusal.
-            raise Unmeasurable(
-                f"`{argv[0]}` runs text this hook cannot read, and a `cd` inside "
-                "it moves where the git command lands"
-            )
+        # Peeled BEFORE the word is tested. Tested first, `builtin eval "cd <repo>"`
+        # reads as `builtin` -- neither a directory change nor an unreadable one --
+        # and the line is stepped over, measured in a tree the git call never ran
+        # in, and allowed.
         argv = unwrapped(argv)
-        if argv[0] not in ("cd", "pushd", "popd"):
+        if argv[0] not in ("cd", "pushd", "popd", *RUNS_TEXT):
             # Only a command that MOVES the shell can leave the directory in
             # doubt. Refusing on any earlier `||` blames a `cd` that is not
             # there: `test -d x || echo no; git checkout -- a.txt` gets a blind
@@ -1715,6 +1730,24 @@ def resolve_cwd(
             # subshell, so this `cd` moved a shell that has already exited by the
             # time the git command runs.
             continue
+        if argv[0] in RUNS_TEXT:
+            if saved:
+                # Inside an unclosed `(`, so whatever it did to the directory left
+                # with that subshell. Refusing here would trade a measured refusal
+                # for a blind one over a move that cannot have reached the git call.
+                continue
+            # The `cd` would be inside text this hook does not read, and it moves
+            # the shell all the same: `eval "cd <repo>" && git reset --hard` runs
+            # the reset in that repository, measured here as the payload's own tree,
+            # found clean, and allowed. Unknown rather than unchanged is a refusal.
+            #
+            # Placed after the skips above rather than at recognition, because a
+            # form the rest of this function would have stepped over cannot have
+            # moved anything, and refusing it costs the at-stake list for nothing.
+            raise Unmeasurable(
+                f"`{argv[0]}` runs text this hook cannot read, and a `cd` inside "
+                "it moves where the git command lands"
+            )
         if argv[0] == "popd":
             raise Unmeasurable("`popd` returns to a directory only the shell knows")
         targets = [a for a in argv[1:] if not a.startswith("-")]
@@ -2273,7 +2306,7 @@ def main() -> None:
             if resolved is None:
                 continue  # nowhere holding content that existed when this ran
             cwd, wider_than_reach = resolved
-            cdirs, _, _ = strip_global_opts(rest)
+            cdirs, _, relocating_global = strip_global_opts(rest)
             for d in cdirs:
                 # Through the same gate as a `cd` target: `git -C` names a
                 # directory the shell may still have to resolve, and the two ways
@@ -2291,11 +2324,18 @@ def main() -> None:
                 if existing is None:
                     continue
                 cwd, wider_than_reach = str(existing), True
-            elif not in_repository(cwd):
+            elif relocating_global is None and not in_repository(cwd):
                 # Nothing here to lose: git resolves upwards and stops, so the
                 # command exits without touching a file. Checked on THIS side too,
                 # not only inside `nearest_existing`, and after the `git -C`
                 # folding above, which is what can move the answer either way.
+                #
+                # `relocating_global` is what keeps the answer honest, because HERE
+                # is exactly what those options move: under `--git-dir` /
+                # `--work-tree` the command acts on a tree the launch directory says
+                # nothing about, and it discards that tree's work. Answering here
+                # would reach ALLOW before `stake_for` -- the only thing that
+                # refuses an unrecognized global -- ever runs.
                 # Without it a plain directory gets a refusal carrying git's own
                 # usage screen as its explanation, while the same command one
                 # directory-that-does-not-exist away is allowed -- one intent,

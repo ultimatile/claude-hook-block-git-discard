@@ -1547,6 +1547,110 @@ def test_a_cd_written_under_another_word_is_still_a_cd(
     assert deny_reason(HOOK, line, payload_cwd=repo) is not None, line
 
 
+def test_a_relocating_global_denies_even_from_outside_a_repository(
+    deny_reason: HookRunner, tmp_path: Path
+) -> None:
+    """ "Nothing here to lose" is about HERE, and these globals move where that is.
+
+    `--git-dir` / `--work-tree` name the tree the command acts on, so the directory
+    it was launched from says nothing about what it reaches: the command really
+    does discard the named worktree's uncommitted work. Answering from the launch
+    directory allowed it, which is the fail-open the enclosing check has to stay
+    clear of -- `stake_for` is what refuses an unrecognized global, and it only
+    gets to when this check declines to answer first.
+    """
+    other = repo_holding_work(tmp_path / "other")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    line = f"git --git-dir={other}/.git --work-tree={other} reset --hard"
+    assert deny_reason(HOOK, line, payload_cwd=plain) is not None, line
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ['builtin eval "cd {other}"', 'command eval "cd {other}"'],
+)
+def test_a_wrapper_around_an_unreadable_cd_is_peeled_first(
+    deny_reason: HookRunner, repo: Path, tmp_path: Path, spelling: str
+) -> None:
+    """Peeling has to happen BEFORE the word is tested, not after.
+
+    Tested first, `builtin eval "cd <repo>"` reads as `builtin` -- a word that is
+    neither a directory change nor an unreadable one -- and the line is stepped
+    over, measured in the payload's own clean tree, and allowed while the other
+    repository's work goes. The bare `eval` spelling of the same line denies.
+    """
+    other = repo_holding_work(tmp_path / "other")
+    line = f"{spelling.format(other=other)} && git reset --hard"
+    assert deny_reason(HOOK, line, payload_cwd=repo) is not None, line
+
+
+def test_a_reporting_wrapper_runs_nothing_and_is_not_refused(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`command -v <name>` reports what a name resolves to and runs it not at all.
+
+    So it moves no directory, and refusing the line costs a token over a shape that
+    cannot reach anything. `command`'s options are a closed set -- POSIX gives it
+    `-p`, `-v` and `-V`, and `-p` is the only one that still runs the command -- so
+    this is enumerable rather than guessed at.
+    """
+    assert (
+        deny_reason(HOOK, "command -v rg && git checkout -- a.txt", payload_cwd=repo)
+        is None
+    )
+    dirty(repo)
+    reason = deny_reason(
+        HOOK, "command -v rg && git checkout -- a.txt", payload_cwd=repo
+    )
+    assert reason is not None
+    # Measured, not blind: the wrapper is stepped over rather than refused on.
+    assert "At stake" in reason, reason
+
+
+def test_an_unreadable_command_inside_a_subshell_does_not_blind_the_measurement(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """A pipeline stage and a subshell each get their own shell, which then exits.
+
+    So an `eval` in one cannot move the shell the git call runs in, and the
+    measurement is still available. Refusing here would trade a measured refusal --
+    the at-stake list and a content-bound token -- for a blind one, over a
+    directory change that cannot have happened.
+    """
+    dirty(repo)
+    for command in (
+        'eval "cd /tmp" | cat ; git checkout -- a.txt',
+        '(eval "cd /tmp") ; git checkout -- a.txt',
+    ):
+        reason = deny_reason(HOOK, command, payload_cwd=repo)
+        assert reason is not None, command
+        assert "At stake" in reason, (command, reason)
+        assert "a.txt" in reason, (command, reason)
+
+
+def test_sourcing_a_file_is_a_declared_exclusion_not_a_refusal(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`.` and `source` read a FILE this hook does not, and refusing every one is
+    a tax on a line agents type constantly (`. .venv/bin/activate && ...`).
+
+    So they sit with the other run-time resolutions the README declares out of
+    scope -- an alias, a shell function, a name that only becomes `git` when the
+    shell expands it. A `cd` inside such a file is not followed, which is the cost
+    named there.
+    """
+    (repo / "activate").write_text("export X=1\n")
+    assert (
+        deny_reason(HOOK, ". activate && git checkout -- a.txt", payload_cwd=repo)
+        is None
+    )
+    dirty(repo)
+    reason = deny_reason(HOOK, ". activate && git checkout -- a.txt", payload_cwd=repo)
+    assert reason is not None
+    assert "At stake" in reason, reason
+
+
 def test_a_peeled_cd_is_followed_rather_than_only_refused(
     deny_reason: HookRunner, repo: Path, tmp_path: Path
 ) -> None:
