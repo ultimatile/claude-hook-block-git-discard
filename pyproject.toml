@@ -58,3 +58,9 @@ select = ["E", "W", "F", "I", "B", "BLE", "C4", "UP", "ARG", "SIM", "PTH", "RUF1
 testpaths = ["tests"]
 pythonpath = ["tests"]
 python_files = ["test_*.py"]
+# The acceptance sweeps are opt-in: `uv run pytest -m acceptance`. Excluded by
+# default because they take minutes, and a suite that takes minutes stops being
+# run before a commit. `oracle/README.md` states what they claim, what they
+# cost, and why a count of review findings is no substitute for them.
+markers = ["acceptance: the oracle-backed acceptance sweeps (slow; see oracle/)"]
+addopts = "-m 'not acceptance'"
