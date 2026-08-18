@@ -1526,6 +1526,105 @@ def test_pushd_is_followed_like_cd(
 
 
 @pytest.mark.parametrize(
+    "spelling", ['eval "cd {other}"', "builtin cd {other}", "command cd {other}"]
+)
+def test_a_cd_written_under_another_word_is_still_a_cd(
+    deny_reason: HookRunner, repo: Path, tmp_path: Path, spelling: str
+) -> None:
+    """Recognizing the move by the first word alone steps over every wrapper.
+
+    `eval`, `builtin` and `command` all run in the CURRENT shell rather than a
+    subshell, so the directory they change stays changed and the git call lands in
+    the other repository. Stepped over, the measurement is taken in the payload's
+    own tree, which holds nothing -- and nothing at stake is ALLOW, while the
+    other repository's uncommitted work is what the line destroys.
+
+    The `repo` fixture is deliberately clean, so a pass here cannot be explained
+    by having measured the right tree and found it empty.
+    """
+    other = repo_holding_work(tmp_path / "other")
+    line = f"{spelling.format(other=other)} && git reset --hard"
+    assert deny_reason(HOOK, line, payload_cwd=repo) is not None, line
+
+
+def test_a_peeled_cd_is_followed_rather_than_only_refused(
+    deny_reason: HookRunner, repo: Path, tmp_path: Path
+) -> None:
+    """Peeling the wrapper has to leave a `cd` the hook then follows.
+
+    Refusing on the mere sight of a wrapper would satisfy the assertion above
+    while measuring nothing, so this one requires the at-stake list and the other
+    repository's own file in it. `builtin` and `command` are exact synonyms for the
+    builtin, which is what makes following them right.
+
+    `eval` is the contrast and stays blind on purpose: its argument is text this
+    hook does not read, so the directory is unknown rather than known-moved.
+    """
+    other = repo_holding_work(tmp_path / "other")
+    for spelling in (f"cd {other}", f"builtin cd {other}", f"command cd {other}"):
+        reason = deny_reason(HOOK, f"{spelling} && git reset --hard", payload_cwd=repo)
+        assert reason is not None, spelling
+        assert "At stake" in reason, spelling
+        assert "a.txt" in reason, (spelling, reason)
+    blind = deny_reason(
+        HOOK, f'eval "cd {other}" && git reset --hard', payload_cwd=repo
+    )
+    assert blind is not None
+    assert "At stake" not in blind, blind
+
+
+def test_a_redirection_shape_inside_a_quoted_pathspec_survives(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`FD_PREFIX` rewrites the raw command text, so it cannot see quotes.
+
+    ` 2>` is a redirection between words and part of the filename inside quotes,
+    and deleting it from a quoted pathspec leaves a name the repository does not
+    have. The measurement then narrows to nothing, and nothing at stake is ALLOW.
+
+    Both branches of `measure` are asked, because the tracked and untracked halves
+    reach the pathspec by different queries.
+    """
+    tracked_dirty(repo, "a 2>3.txt")
+    assert (
+        deny_reason(HOOK, 'git checkout -- "a 2>3.txt"', payload_cwd=repo) is not None
+    )
+    (repo / "j 2>1.txt").write_text("PRECIOUS\n")
+    assert (
+        deny_reason(HOOK, 'git clean -f -- "j 2>1.txt"', payload_cwd=repo) is not None
+    )
+
+
+@pytest.mark.parametrize("name", ["a b.txt", "a>b.txt", "x2>3.txt"])
+def test_names_beside_the_redirection_shape_keep_denying(
+    deny_reason: HookRunner, repo: Path, name: str
+) -> None:
+    """The boundary of that fix, and green on both sides of it.
+
+    These three already deny, and they are what isolates the cause: it takes a
+    space, then digits, then `>`. A fix that stripped less carefully would start
+    losing one of them.
+    """
+    tracked_dirty(repo, name)
+    assert deny_reason(HOOK, f'git checkout -- "{name}"', payload_cwd=repo) is not None
+
+
+def test_a_hash_after_an_escaped_space_is_not_a_comment(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """`strip_comments` follows quotes but not backslash escapes.
+
+    The shell starts a comment only at a word's BEGINNING, and `a\\ #b.txt` is one
+    word -- `printf` hands git `a #b.txt`. Read as a comment, the rest of the
+    pathspec is dropped, the measurement narrows to nothing, and ALLOW follows.
+    """
+    tracked_dirty(repo, "a #b.txt")
+    assert deny_reason(HOOK, "git checkout -- a\\ #b.txt", payload_cwd=repo) is not None
+    (repo / "j #1.txt").write_text("PRECIOUS\n")
+    assert deny_reason(HOOK, "git clean -f -- j\\ #1.txt", payload_cwd=repo) is not None
+
+
+@pytest.mark.parametrize(
     ("line", "moves"),
     [
         ("(cd {other} && git status); ", False),

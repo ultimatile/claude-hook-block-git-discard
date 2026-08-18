@@ -212,6 +212,91 @@ WHITESPACE = re.compile(r"\s")
 # `git checkout -- 2 > log`, over a repository holding a file named `2`.
 FD_PREFIX = re.compile(r"(?:(?<=\s)|\A)\d+(?=[<>])")
 
+# The stand-in `mask_quoted` writes over quoted and escaped characters. NUL,
+# because nothing a caller looks for through the mask can match it: it is not
+# whitespace, not a digit, not a `#`, not a newline, and not a redirection.
+MASK = "\0"
+
+
+def mask_quoted(text: str) -> str:
+    """`text` with every quoted or escaped character replaced by `MASK`, same length.
+
+    ONE quote model, shared by every rewrite that has to respect quoting. Written
+    apart they drift, and a drift here is a rewrite firing inside a quoted
+    pathspec: the name it leaves behind is one the repository does not have, the
+    measurement narrows to nothing, and nothing at stake is ALLOW -- the one
+    direction this hook exists to exclude. Two fail-opens arrived exactly that way,
+    one deleting ` 2>` from `"a 2>3.txt"` and one reading the `#` in `a\\ #b.txt`
+    as a comment.
+
+    Length-preserving on purpose: a caller runs its own regex over the mask and
+    applies the spans it finds to the ORIGINAL text, so no offset arithmetic is
+    needed and no caller has to re-derive where a quote began.
+
+    What the shell does, and what this follows: single quotes take a backslash
+    literally, double quotes and `$'...'` (ANSI-C) let it escape, and outside
+    quotes it escapes whatever comes next. The quote characters and the backslashes
+    are masked as well, because they are syntax rather than content -- a caller
+    testing for a word boundary must not read a quoted or escaped space as one.
+
+    ANSI-C is tracked rather than folded into the ordinary single quote because the
+    two close in different places. In `$'don\\'t'` the `\\'` escapes and the word
+    ends after `t`; read as an ordinary quote the `\\'` closes it and the `'` after
+    `t` opens a NEW one, which then runs past the end of the line -- and a caller
+    splitting on unmasked newlines joins the next command into this one's argument
+    list, carrying an inert call's guard over whatever verb that line runs.
+    """
+    out: list[str] = []
+    quote = ""
+    ansi_c = False
+    dollar = False
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+            dollar = False
+            out.append(MASK)
+            continue
+        if (quote != "'" or ansi_c) and ch == "\\":
+            escaped = True
+            dollar = False
+            out.append(MASK)
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+                ansi_c = False
+            dollar = False
+            out.append(MASK)
+            continue
+        if ch in "'\"":
+            ansi_c = ch == "'" and dollar
+            quote = ch
+            dollar = False
+            out.append(MASK)
+            continue
+        dollar = ch == "$"
+        out.append(ch)
+    return "".join(out)
+
+
+def strip_fd_prefixes(command: str) -> str:
+    """Delete a descriptor number written against a redirection, quoting respected.
+
+    ` 2>` is a redirection between words and part of the filename inside quotes.
+    The match therefore runs over the mask and the span is cut from the original,
+    which also settles a digit that only looks unquoted because of what precedes
+    it: in `"x"2>log` the shell reads the word as `x2`, and through the mask the
+    digit has a masked character in front of it rather than whitespace, so it does
+    not match.
+    """
+    masked = mask_quoted(command)
+    out = list(command)
+    for found in FD_PREFIX.finditer(masked):
+        out[found.start() : found.end()] = " " * (found.end() - found.start())
+    return "".join(out)
+
+
 # git subcommands that do NOT run a command string handed to them as an argument,
 # so a `git <verb>` sitting inside one of these is text and not a call. Without
 # this, `git commit -m "block git clean when untracked files exist"` is refused --
@@ -256,7 +341,7 @@ def prepared(command: str, *, mask: bool = True) -> str:
         while previous != command:
             previous = command
             command = SUBSTITUTION.sub("$SUBST", command)
-    return FD_PREFIX.sub(" ", command)
+    return strip_fd_prefixes(command)
 
 
 def logical_lines(text: str) -> list[str]:
@@ -268,55 +353,19 @@ def logical_lines(text: str) -> list[str]:
     shell never executes. That refused `git commit -am "subject` + blank line +
     `body naming git reset --hard"` while the single-line spelling passed: two
     readings of one inert call.
+
+    Which newlines those are is `mask_quoted`'s answer, not this function's: a
+    newline it masked is inside quotes or escaped, and only an unmasked one ends a
+    command.
     """
+    masked = mask_quoted(text)
     out: list[str] = []
-    current: list[str] = []
-    quote = ""
-    # `$'...'` is ANSI-C quoting, where a backslash escapes as it does outside
-    # quotes -- so `$'don\'t'` is ONE word and the quote closes at its end. Read
-    # as an ordinary single quote the `\'` closes it instead and the `'` after
-    # `t` opens a new one, so the quote spans the newline and the next line joins
-    # the argument list of the call above it. When that call is inert, its guard
-    # travels with it and swallows whatever verb the next line runs.
-    ansi_c = False
-    # The previous character was a `$` that was neither quoted nor escaped, which
-    # is the only thing that turns the `'` after it into ANSI-C quoting.
-    dollar = False
-    escaped = False
-    for ch in text:
-        if escaped:
-            escaped = False
-            dollar = False
-            current.append(ch)
-            continue
-        # A backslash escapes the next character everywhere EXCEPT inside single
-        # quotes, where the shell takes it literally. Without this arm, `-m
-        # don\'t` reads the `\'` as an opening quote that never closes, so the
-        # newline after it stops ending the command and the following line merges
-        # into the `commit` argument -- carrying the INERT_SUBCOMMANDS guard with
-        # it. `git commit -m don\'t` + newline + `sh -c 'git clean -fdx'` and the
-        # `-m "don't"` spelling of the same message are the same command; this
-        # arm is what makes the hook decide them the same way.
-        if (quote != "'" or ansi_c) and ch == "\\":
-            escaped = True
-            dollar = False
-            current.append(ch)
-            continue
-        if quote:
-            if ch == quote:
-                quote = ""
-                ansi_c = False
-        elif ch in "'\"":
-            quote = ch
-            ansi_c = ch == "'" and dollar
-        elif ch == "\n":
-            out.append("".join(current))
-            current = []
-            dollar = False
-            continue
-        dollar = ch == "$" and not quote
-        current.append(ch)
-    out.append("".join(current))
+    start = 0
+    for i, seen in enumerate(masked):
+        if seen == "\n":
+            out.append(text[start:i])
+            start = i + 1
+    out.append(text[start:])
     return out
 
 
@@ -426,35 +475,37 @@ def strip_comments(command: str) -> str:
     Both halves of that are load-bearing, and quoting is the half a regex cannot
     hold. Cutting at the `#` in `git checkout -- 'x #1.txt'` leaves an unbalanced
     quote; tokenizing then falls back to a whitespace split, the pathspec becomes
-    `'x`, and the same discard goes through by the other door. So the scan tracks
-    quote state and leaves anything inside it alone.
+    `'x`, and the same discard goes through by the other door.
+
+    Read through `mask_quoted`, which settles both halves at once. Escapes matter
+    as much as quotes and for the same reason: `a\\ #b.txt` is ONE word -- the shell
+    hands git `a #b.txt` -- so the `#` in it starts no comment, and a scan that
+    tracked quotes alone read the escaped space as a word boundary, dropped the
+    rest of the pathspec, and let the discard through.
     """
+    masked = mask_quoted(command)
     out: list[str] = []
-    quote = ""
     prev = " "  # the start of the line counts as a word boundary
     skipping = False
-    for ch in command:
+    # `strict` states the invariant rather than trusting it: `mask_quoted` emits one
+    # character per character read, so a length that ever disagrees is a defect in
+    # it, and a silent `zip` would truncate the command instead of saying so.
+    for original, seen in zip(command, masked, strict=True):
         if skipping:
             # A comment runs to the end of its LINE, and this hook is handed
             # multi-line commands, so the rest of the line is not the rest of it.
-            if ch == "\n":
+            if original == "\n":
                 skipping = False
-                out.append(ch)
-                prev = ch
+                out.append(original)
+                prev = seen
             continue
-        if quote:
-            out.append(ch)
-            if ch == quote:
-                quote = ""
-            prev = ch
-            continue
-        if ch in "'\"":
-            quote = ch
-        elif ch == "#" and prev.isspace():
+        if seen == "#" and prev.isspace():
             skipping = True
             continue
-        out.append(ch)
-        prev = ch
+        out.append(original)
+        # From the MASK, so a quoted or escaped space does not read as the word
+        # boundary a comment has to open at.
+        prev = seen
     return "".join(out)
 
 
@@ -1472,6 +1523,42 @@ def hunk_headers(cwd: str, paths: list[str]) -> list[str]:
     return out
 
 
+# Words that run what follows them in the CURRENT shell, so a `cd` behind one moves
+# the shell exactly as a bare `cd` does. Neither opens a subshell: `builtin` skips
+# any function of that name, `command` skips functions and aliases, and both then
+# run the builtin.
+SHELL_WRAPPERS = ("builtin", "command")
+
+# Constructs whose purpose is to execute text or a file this hook does not read. A
+# `cd` inside one is invisible here and moves the shell anyway. A shell FUNCTION
+# that changes directory stays outside this list, and outside what the hook can
+# read at all -- the set of ways to name a `cd` indirectly has no boundary to
+# enumerate, which the README already says of a verb reached through an alias.
+RUNS_TEXT = ("eval", "source", ".")
+
+
+def unwrapped(argv: list[str]) -> list[str]:
+    """`argv` with any `builtin` / `command` prefix peeled off.
+
+    Recognizing the move by the first word alone stepped over every one of these
+    spellings, and each leaves the shell in the new directory: the measurement was
+    then taken in a tree the git call never ran in, which reports nothing at stake.
+
+    An option after the wrapper is refused rather than skipped. `command -v cd`
+    tests for the builtin instead of running it, so skipping to the `cd` would read
+    a move that does not happen -- and guessing which options take a value is the
+    same surface that has produced fail-opens here twice.
+    """
+    out = list(argv)
+    while len(out) > 1 and out[0] in SHELL_WRAPPERS:
+        out = out[1:]
+        if out[0].startswith("-"):
+            raise Unmeasurable(
+                f"`{argv[0]}` with an option is a form this hook does not read"
+            )
+    return out
+
+
 def only_and(sep: str) -> bool:
     """Whether `sep` joins with `&&` and carries no weaker operator.
 
@@ -1581,6 +1668,17 @@ def resolve_cwd(
         sep, argv = commands[j]
         if not argv:
             continue
+        if argv[0] in RUNS_TEXT:
+            # The `cd` is inside text or a file this hook does not read, and it
+            # moves the shell all the same -- `eval "cd <repo>" && git reset
+            # --hard` runs the reset in that repository, measured here as the
+            # payload's own tree, found clean, and allowed. What the directory
+            # became is unknown rather than unchanged, which is a refusal.
+            raise Unmeasurable(
+                f"`{argv[0]}` runs text this hook cannot read, and a `cd` inside "
+                "it moves where the git command lands"
+            )
+        argv = unwrapped(argv)
         if argv[0] not in ("cd", "pushd", "popd"):
             # Only a command that MOVES the shell can leave the directory in
             # doubt. Refusing on any earlier `||` blames a `cd` that is not
