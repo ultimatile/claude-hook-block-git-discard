@@ -1,7 +1,7 @@
 """Test support: run the hook the way the harness runs it.
 
 The hook is exercised as a subprocess rather than by importing `main` and calling
-it, and that is not incidental. Its central guarantee is that every path after
+it. Its central guarantee is that every path after
 recognition reaches `print()` and exits 0 -- a hook that exits non-zero is
 reported by Claude Code as a non-blocking error and the command then runs, which
 is the exact failure this hook exists to prevent. Called in-process, a raise

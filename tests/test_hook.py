@@ -2684,8 +2684,8 @@ HOSTILE_COVERED = [
     pytest.param("git reset --hard \x1b[2J\x07", id="control-characters"),
 ]
 
-# These do not, and the distinction is the point rather than an omission: with
-# the surrogate glued to the verb the word is `\udcfeclean`, which is no more a
+# These do not, and not by omission: with the surrogate glued to the verb the
+# word is `\udcfeclean`, which is no more a
 # covered call than `git frobnicate` is -- git answers "not a git command" and
 # nothing is discarded. Allowing them is correct. What is still owed is that the
 # hook reach that answer instead of raising on the way to it.
@@ -3163,9 +3163,8 @@ def test_a_separator_behind_the_name_still_ends_the_previous_command(
     token — the only variant that counts no less than a reading which tests the
     whole word.
 
-    These lines are malformed shell, which is the point: the guard cannot depend
-    on its input being well formed, and refusing a line the shell would reject
-    costs nothing at all.
+    These lines are malformed shell, and the guard cannot depend on its input
+    being well formed; refusing a line the shell would reject costs nothing.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command

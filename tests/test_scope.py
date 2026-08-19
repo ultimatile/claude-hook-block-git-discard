@@ -139,8 +139,8 @@ def test_the_hook_denies_exactly_what_destroys_content(
 def test_every_declared_over_refusal_is_needed(tmp_path: Path) -> None:
     """An entry does work only when its cell destroys nothing and is refused.
 
-    Both halves are load-bearing, and each fails in its own direction. With a
-    loss the rule demands a deny outright, so the exemption gates nothing. With
+    Each half fails in its own direction. With a loss the rule demands a deny
+    outright, so the exemption gates nothing. With
     an allow there is no refusal to exempt, so it gates nothing either — and
     that half is the one a list checked only for live names cannot see:
     `test_every_declared_over_refusal_names_a_cell` holds the name, and

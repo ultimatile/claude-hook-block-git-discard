@@ -7,8 +7,8 @@ silently stops working.
 
 So the fault is injected: each test runs the real `main()` in a real subprocess
 with one internal broken on purpose, and asserts the process still exits 0 and
-still prints a deny. The subprocess is the point. In-process these faults would
-surface as test errors; through a process boundary they surface as what they
+still prints a deny. In-process these faults would surface as test errors;
+through a process boundary they surface as what they
 actually are, since a hook that exits non-zero is reported by the harness as a
 non-blocking error and the command then runs.
 """

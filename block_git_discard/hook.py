@@ -164,30 +164,24 @@ MASK = "\0"
 def mask_quoted(text: str) -> str:
     """`text` with every quoted or escaped character replaced by `MASK`, same length.
 
-    one quote model, shared by every rewrite that has to respect quoting. Written
+    One quote model, shared by every rewrite that has to respect quoting. Written
     apart they drift, and a drift here is a rewrite firing inside a quoted
     pathspec: the name it leaves behind is one the repository does not have, the
-    measurement narrows to nothing, and nothing at stake is allow -- the one
-    direction this hook exists to exclude. Two fail-opens arrived exactly that way,
-    one deleting ` 2>` from `"a 2>3.txt"` and one reading the `#` in `a\\ #b.txt`
-    as a comment.
+    measurement narrows to nothing, and nothing at stake is an allow.
 
     Length-preserving on purpose: a caller runs its own regex over the mask and
     applies the spans it finds to the original text, so no offset arithmetic is
     needed and no caller has to re-derive where a quote began.
 
     What the shell does, and what this follows: single quotes take a backslash
-    literally, double quotes and `$'...'` (ansi-c) let it escape, and outside
-    quotes it escapes whatever comes next. The quote characters and the backslashes
-    are masked as well, because they are syntax rather than content -- a caller
-    testing for a word boundary must not read a quoted or escaped space as one.
+    literally, double quotes and `$'...'` (ANSI-C) let it escape, and outside
+    quotes it escapes whatever comes next. The quote characters and the
+    backslashes are masked too, because they are syntax rather than content.
 
-    ansi-c is tracked rather than folded into the ordinary single quote because the
-    two close in different places. In `$'don\\'t'` the `\\'` escapes and the word
-    ends after `t`; read as an ordinary quote the `\\'` closes it and the `'` after
-    `t` opens a new one, which then runs past the end of the line -- and a caller
-    splitting on unmasked newlines joins the next command into this one's argument
-    list, carrying an inert call's guard over whatever verb that line runs.
+    ANSI-C is tracked rather than folded into the ordinary single quote because
+    the two close in different places. In `$'don\\'t'` the `\\'` escapes and the
+    word ends after `t`; read as an ordinary quote it closes there and the `'`
+    after `t` opens a new one that runs past the end of the line.
     """
     out: list[str] = []
     quote = ""
@@ -246,8 +240,8 @@ def strip_fd_prefixes(command: str) -> str:
 # this, `git commit -m "block git clean when untracked files exist"` is refused --
 # an ordinary commit message, and one this very hook invites people to write.
 #
-# An allowlist, and the direction is the point. Listing the subcommands that do
-# run their argument would make every omission a hole, and that set is open at
+# An allowlist. Listing the subcommands that do run their argument would make
+# every omission a hole, and that set is open at
 # the dangerous end: `submodule foreach`, `bisect run`, `rebase -x` and
 # `-c alias.x='!...'` each run one, and all four were confirmed by execution to
 # discard a tree that way. Listing the ones that do not makes every omission a
@@ -316,29 +310,23 @@ def logical_lines(text: str) -> list[str]:
 def mentions(command: str) -> int:
     """Covered calls the raw text names, read as crudely as this hook can manage.
 
-    Deliberately a second parser, and a dumber one. It reads the raw text, so the
-    things that made the real parse lose a verb -- a `(` the tokenizer reads as a
-    separator, a here-document delimiter, a payload sitting inside `sh -c '...'`
-    -- have no purchase on it. Compared in `main` against what that parse
-    recognized, a shortfall is a covered verb nothing accounted for.
+    Deliberately a second parser, and a dumber one. It reads the raw text, so
+    what made the real parse lose a verb has no purchase on it. Compared in
+    `main` against what that parse recognized, a shortfall is a covered verb
+    nothing accounted for.
 
-    the name is found by its neighbours, not by reducing a word to it. That is
-    what lets it read a name buried mid-word: `x=$(git reset --hard)`,
-    `export OUT=$(git clean -fdx)` and `cat <(git reset --hard)` each take a
-    worktree and each carry a `git` that no reduction of a whitespace word
-    reaches, since one character in front of the `$(` is enough to stop it. The
-    real parse masks the substitution away and recognizes nothing in them either,
-    so this counter is the only one that can see them at all -- and a scan over
-    character positions has no word to be defeated by.
+    The name is found by its neighbours rather than by reducing a word to it,
+    which is what lets it read a name buried mid-word: in `x=$(git reset --hard)`
+    one character in front of the `$(` stops any reduction, and the real parse
+    masks the substitution away and recognizes nothing there either.
 
     It reads the verb in subcommand position rather than anywhere in the line, so
-    `git log -S clean` and `git tag -d checkout` are not counted; neither
-    discards anything and an agent types both. The look-ahead below is the
-    exception, and it does count `git bisect reset` -- an over-refusal taken
-    knowingly, for the reason given there.
+    a verb sitting in an option's value is not counted. The look-ahead below is
+    the exception and does count `git bisect reset`, an over-refusal taken
+    knowingly for the reason given there.
 
-    And a `git` standing in the arguments of a git call that does not run its
-    arguments is skipped: see `INERT_SUBCOMMANDS`.
+    A `git` in the arguments of a call that does not run its arguments is
+    skipped: see `INERT_SUBCOMMANDS`.
     """
     found = 0
     # line by line, because a newline ends a command as surely as a `;` does and,
@@ -416,16 +404,13 @@ def strip_comments(command: str) -> str:
     real discard let through. The shell instead opens a comment only at a `#`
     that starts a word, and never inside quotes.
 
-    Both halves of that are load-bearing, and quoting is the half a regex cannot
-    hold. Cutting at the `#` in `git checkout -- 'x #1.txt'` leaves an unbalanced
-    quote; tokenizing then falls back to a whitespace split, the pathspec becomes
-    `'x`, and the same discard goes through by the other door.
+    Quoting is the half a regex cannot hold: cutting at the `#` in
+    `git checkout -- 'x #1.txt'` leaves an unbalanced
+    quote, tokenizing falls back to a whitespace split, and the pathspec becomes
+    `'x`. Escapes matter as much and for the same reason -- `a\\ #b.txt` is one
+    word, the shell hands git `a #b.txt`, and the `#` in it starts no comment.
 
-    Read through `mask_quoted`, which settles both halves at once. Escapes matter
-    as much as quotes and for the same reason: `a\\ #b.txt` is one word -- the shell
-    hands git `a #b.txt` -- so the `#` in it starts no comment, and a scan that
-    tracked quotes alone read the escaped space as a word boundary, dropped the
-    rest of the pathspec, and let the discard through.
+    Read through `mask_quoted`, which settles both halves at once.
     """
     masked = mask_quoted(command)
     out: list[str] = []
@@ -576,19 +561,13 @@ def git_args(argv: list[str]) -> tuple[list[str], bool] | None:
     command position ends the search.
 
     Stepping over an assignment is what makes the second half of the return
-    necessary. `GIT_DIR` and `GIT_WORK_TREE` move the tree exactly as the
-    `--git-dir` / `--work-tree` options do, and `GIT_INDEX_FILE`,
-    `GIT_NAMESPACE`, `GIT_OBJECT_DIRECTORY` and the `GIT_CONFIG_*` family each
-    move some other input the measurement here depends on. Read as ordinary
-    prefix noise they would leave the hook measuring the directory it was handed
-    while the command works on another one -- and reporting nothing at stake is
-    the worst answer available.
+    necessary: a `GIT_*` assignment moves the tree, the index or the config the
+    measurement depends on, and read as ordinary prefix noise it leaves the hook
+    measuring the directory it was handed while the command works on another one.
 
-    The test is the `GIT_` prefix, not a list of the variables that matter: git's
-    environment surface is large and grows, and a list would go quiet on
-    whichever member had not been added yet. Erring wide costs an override on
-    `GIT_PAGER=cat git reset --hard`, which is neither common nor destructive to
-    refuse.
+    The test is the `GIT_` prefix rather than the variables that matter, because
+    git's environment surface grows and a list goes quiet on whichever member was
+    not added to it. Erring wide costs an override on `GIT_PAGER=cat`.
     """
     relocating_env = False
     for i, tok in enumerate(argv):
@@ -800,9 +779,9 @@ LONG_OPTS = frozenset(
 )
 
 # Of those, the ones whose presence makes a command harmless. They are matched by
-# exact spelling only, and the asymmetry is the point: an abbreviation is
-# expanded against `LONG_OPTS`, which is a union over all five verbs rather than
-# any verb's real option table, so it can name a flag the verb does not have.
+# Exact spelling only. An abbreviation is expanded against `LONG_OPTS`, a union
+# over all five verbs rather than any verb's real option table, so it can name a
+# flag the verb does not have.
 # `git switch --p -f other` was read that way -- `--p` became `--patch`, which
 # `switch` has no such thing as, and the command left without being measured
 # while git resolved `--p` to `--progress` and discarded the tree.
@@ -1579,54 +1558,37 @@ def resolve_cwd(
 
     Applies the directory changes from the simple commands preceding it. `pushd`
     moves the shell exactly as `cd` does and is followed the same way; reading
-    only `cd` leaves `pushd <other-repo> && git reset --hard` measured against
-    the directory the command never ran in, which reports nothing at stake and
-    lets that repository's uncommitted work go -- fail-open, against this hook's
-    whole posture. `popd` and a bare `pushd` land wherever the shell's own
-    directory stack points, and `cd -` wherever `OLDPWD` does; the payload
-    carries neither, so all three are refused rather than guessed at. So is
-    anything after `||`, where the shell may or may not have run the `cd` at
-    all.
+    only `cd` leaves `pushd <other-repo> && git reset --hard` measured against a
+    directory the command never ran in, which reports nothing at stake. `popd`, a
+    bare `pushd` and `cd -` land wherever the shell's own stack or `OLDPWD`
+    points, which the payload does not carry, so they are refused rather than
+    guessed at. So is anything after `||`, where the shell may not have run the
+    `cd` at all.
 
-    A `cd` target that does not exist yet is not a failure to measure -- it is a
-    measurement, and what it measures is nothing. This hook protects content that
-    exists when it decides; a path holding none can only come to hold what the
-    rest of this same line puts there. Which of the two readings applies is
-    decided by the separator joining that `cd` to what follows, and by nothing
-    else -- notably not by what the earlier commands were, since the set of ways
-    to produce a directory (`git clone`, `ghq get`, `gh repo clone`,
-    `git worktree add`, `mkdir`, `tar x`, ...) has no boundary to enumerate:
-
-      `&&` -- either the directory exists by then, holding only what this line
-              just put there, or it does not and the `&&` stops the git command
-              from running at all. Neither branch endangers anything that existed
-              when this hook decided, so the whole line is left alone.
-
-      `;`  -- a failed `cd` stops nothing: the git command runs in the directory
-              the shell was already in. That directory is right here and can be
-              measured, so `cd typo; git reset --hard` is answered with the
-              files it will actually destroy instead of a blind refusal.
+    A `cd` target that does not exist yet is a measurement rather than a failure
+    to measure, and what it measures is nothing: this hook protects content that
+    exists when it decides, and a path holding none can only come to hold what
+    the rest of this same line puts there. The separator decides which reading
+    applies, and nothing else does -- notably not what the earlier commands were,
+    since the set of ways to produce a directory has no boundary to enumerate.
+    Under `&&` the git command runs only if the `cd` succeeded, so either the
+    directory holds just what this line put there or the command never runs.
+    Under `;` a failed `cd` stops nothing and the git command runs where the
+    shell already was, which is right here and can be measured.
 
     Reading an absence as "nothing here" is only sound for the path the shell
-    will use, so a target the shell has still to expand is refused instead. `~`
-    is expanded here, because this hook and that shell share a home; `$VAR`,
-    a command substitution and a brace expansion are not, and testing the
-    unexpanded spelling would find no directory and hand `cd $repo && git reset
-    --hard` a pass over whatever the variable actually names.
+    will use, so a target the shell has still to expand is refused. `~` is
+    expanded here because this hook and that shell share a home; `$VAR`, a
+    command substitution and a brace expansion are not.
 
-    A `cd` the shell runs in a subshell is undone when that subshell ends, so it
-    is undone here too: `(cd /other && git status); git reset --hard` resets the
-    payload's own tree, so letting the `cd` outlive the parens measures `/other`,
-    finds it clean, and answers about a tree the line never touches. Parens are
-    tracked as a stack, restoring the directory saved on the way in; a `cd`
-    in a pipeline or backgrounded with `&` gets its own subshell the same way and
-    is skipped outright.
+    A `cd` inside a subshell is undone when the subshell ends, so it is undone
+    here too -- parens are tracked as a stack, and a `cd` in a pipeline or
+    backgrounded with `&` gets its own subshell and is skipped. Letting one
+    outlive its parens measures a tree the line never touches.
 
-    The residue this leaves unguarded is content the same line moves into the
-    target, as in `mv <dirty-repo> new && cd new && git reset --hard`: it exists
-    when the hook decides, but at a path the hook has no way to connect to the
-    one the command names. Closing that needs the enumeration ruled out above,
-    of content-moving commands this time.
+    The residue left unguarded is content the same line moves into the target,
+    as in `mv <dirty-repo> new && cd new && git reset --hard`. Closing it needs
+    the enumeration ruled out above, of content-moving commands this time.
     """
     cwd = Path(payload_cwd)
     saved: list[Path] = []
@@ -1803,11 +1765,10 @@ def stash_routes() -> str:
 # that offer a stash and end on the same promise; the worktree message makes a
 # different, joint claim covering `keep.patch` as well and writes its own.
 #
-# Complete, which is the whole of the design note. The sites do not share a
-# sentence, and that is exactly why the shared unit is a whole clause rather than
-# the bare predicate `"keeps the entry if it cannot"`: a fragment leaves each
-# site to supply the subject and verb the ellipsis was written for, and a site
-# that supplies the wrong one emits "the stash keeps the entry if it cannot" --
+# Complete rather than the bare predicate `"keeps the entry if it cannot"`,
+# because the sites do not share a sentence: a fragment leaves each to supply the
+# subject and verb the ellipsis was written for, and one that supplies the wrong
+# one emits "the stash keeps the entry if it cannot" --
 # the subject moved off the pop it describes -- or "A pop that cannot place its
 # entry keeps the entry if it cannot", which says nothing at all. Shared text
 # that arrives already grammatical cannot be spliced wrong; `stash_routes()` is
@@ -1831,7 +1792,7 @@ def operand(path: str) -> str:
 def listing_for(kind: str) -> str:
     """The command that prints the names the cap stood in for -- all of them.
 
-    Two axes, and both are load-bearing. `--ignored`, because a plain
+    Two axes. `--ignored`, because a plain
     `git status` does not report an ignored file at all: for `clean -fX` it shows
     none of the list. And `-uall`, because it otherwise collapses an untracked
     directory to one entry: over 60 files under `bigdir/` it prints `?? bigdir/`
@@ -1921,12 +1882,10 @@ def build_reason(
     # both do guarantee is that the copy outlives the failure -- the stash entry
     # is kept, the patch file stays on disk -- and that is the part the caller is
     # deciding on here, so it is the part the message states.
-    # either, and the word is load-bearing. Listed without it, with "Both ... Run
-    # them" as the only quantifier on offer, the pair reads as two steps: stash
-    # first, then diff -- which diffs a tree the stash has already cleaned, writes
-    # a 0-byte keep.patch, and ends at `git apply` exiting 128 on "No valid
-    # patches in input". The reader following the message exactly is the reader
-    # this message exists for.
+    # Listed without `EITHER`, with "Both ... Run them" as the only quantifier on
+    # offer, the pair reads as two steps: stash first, then diff -- which diffs a
+    # tree the stash has already cleaned, writes a 0-byte keep.patch, and ends at
+    # `git apply` exiting 128 on "No valid patches in input".
     if kind == "worktree":
         lines += [
             "",
@@ -2104,36 +2063,28 @@ def clipped(text: str, limit: int = 400) -> str:
 def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
     """Refuse a covered shape that was not measured. False when already overridden.
 
-    Raises for no input the payload can carry, which is a guarantee and not an
-    observation: this function is the refusal, so a raise escaping it is a
-    non-zero exit, which the harness reports as a non-blocking error before
-    running the command. The handler at the end is what holds it.
+    Raises for no input the payload can carry, and that is a guarantee rather
+    than an observation: this function IS the refusal, so a raise escaping it
+    exits non-zero, which the harness reports as a non-blocking error before
+    running the command. The handler at the end holds it.
 
-    Scoped to the input on purpose, rather than claimed absolutely. One raise
-    source survives the handler -- `emit_deny` writes to stdout, and a stdout
-    that has gone away raises `BrokenPipeError` from inside the handler itself.
-    Nothing here can answer that: the decision reaches the harness through
-    stdout, so with stdout gone a refusal and a crash are the same event, and
-    both end with the command running. It is left unhandled because handling it
-    would only make the guarantee read as broader than it is.
+    One raise source survives that handler and is left unhandled: `emit_deny`
+    writes to stdout, and a stdout that has gone away raises `BrokenPipeError`
+    from inside the handler itself. The decision reaches the harness through
+    stdout, so with stdout gone a refusal and a crash are the same event.
+    Handling it would only make the guarantee read as broader than it is.
 
-    Two callers reach this, and they fail in different places: a measurement that
-    could not be taken, and a covered verb that was never read as a call at all.
-    Both leave the same thing unknown -- what is at stake -- so both offer the
-    same token, which binds the command alone because that is all that is
-    knowable once no measurement exists to bind to.
+    Two callers reach this -- a measurement that could not be taken, and a
+    covered verb never read as a call. Both leave the same thing unknown, so both
+    offer a token binding the command alone, which is all there is to bind to.
 
-    What they do not share is how much is being claimed, which is why `posture`
-    is the caller's to write. A measurement that failed was taken over a command
-    this hook did read as a discard; the backstop fires on text it could not read
-    at all, and some of what it catches -- a script being written, a line echoing
-    a command -- destroys nothing. One sentence asserting irreversible loss for
-    both would be false half the time it printed.
+    They differ in how much they are entitled to claim, which is why `posture` is
+    the caller's to write: the backstop fires on text this hook could not read,
+    and some of what it catches destroys nothing. One sentence asserting
+    irreversible loss for both would be false half the time it printed.
 
-    `cwd` is the payload's working directory, and it is the only place in this
-    message a reader can be sent that they could not have been expected to work
-    out for themselves. It is a starting point, not the tree at stake: the
-    message says which is which.
+    `cwd` is the payload's working directory: a starting point for the reader,
+    not the tree at stake, and the message says which is which.
     """
     try:
         token = hashlib.sha256(
