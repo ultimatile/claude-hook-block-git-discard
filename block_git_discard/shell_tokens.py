@@ -33,13 +33,13 @@ def tokenize(command: str, *, comments: bool = True) -> list[str]:
     """Split a shell command line, keeping separators as standalone tokens.
 
     Quoting is honored, so a metacharacter inside an argument (`git commit -m
-    'a;b'`) stays part of its token. In posix mode an argument that is nothing BUT
+    'a;b'`) stays part of its token. In posix mode an argument that is nothing but
     a metacharacter (`git commit -m ';'`) is indistinguishable from a real
     separator and ends that invocation's argument list early; the effect is a
     narrower scope, never a wider one.
 
     `comments=False` stops shlex ending a token at `#`. Its default fires on a
-    `#` ANYWHERE in a word, where the shell only starts a comment at a word's
+    `#` anywhere in a word, where the shell only starts a comment at a word's
     beginning: `git checkout -- f#1.txt` truncates to `f`, and a caller reading
     that as the filename is reading one the command never names. A caller that
     turns this off owes its own comment handling, since the whole rest of the line

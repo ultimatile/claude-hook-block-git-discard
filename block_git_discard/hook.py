@@ -320,13 +320,12 @@ def mentions(command: str) -> int:
     one character in front of the `$(` stops any reduction, and the real parse
     masks the substitution away and recognizes nothing there either.
 
-    It reads the verb in subcommand position rather than anywhere in the line, so
-    a verb sitting in an option's value is not counted. The look-ahead below is
-    the exception and does count `git bisect reset`, an over-refusal taken
-    knowingly for the reason given there.
-
     A `git` in the arguments of a call that does not run its arguments is
-    skipped: see `INERT_SUBCOMMANDS`.
+    skipped: see `INERT_SUBCOMMANDS`. That is the only position a covered verb
+    goes uncounted in. Everywhere else the look-ahead below counts one anywhere
+    before the next separator, an option's value included, so `git diff -S clean`
+    and `git blame -L 1,2 reset` are refused while `git log -S clean` is not --
+    measured, and the difference is `log` being inert.
     """
     found = 0
     # line by line, because a newline ends a command as surely as a `;` does and,
@@ -778,13 +777,13 @@ LONG_OPTS = frozenset(
     }
 )
 
-# Of those, the ones whose presence makes a command harmless. They are matched by
-# Exact spelling only. An abbreviation is expanded against `LONG_OPTS`, a union
+# Of those, the ones whose presence makes a command harmless, matched by exact
+# spelling only. An abbreviation is expanded against `LONG_OPTS`, a union
 # over all five verbs rather than any verb's real option table, so it can name a
 # flag the verb does not have.
-# `git switch --p -f other` was read that way -- `--p` became `--patch`, which
-# `switch` has no such thing as, and the command left without being measured
-# while git resolved `--p` to `--progress` and discarded the tree.
+# `git switch --p -f other` is the case that fixes the rule: `--p` expands to
+# `--patch`, which `switch` does not have, so reading it as harmless cancels the
+# measurement while git resolves `--p` to `--progress` and discards the tree.
 #
 # Over-expanding toward a destructive flag only ever adds a refusal, so that
 # direction keeps its abbreviations. Toward a harmless one it removes the
@@ -2064,7 +2063,7 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
     """Refuse a covered shape that was not measured. False when already overridden.
 
     Raises for no input the payload can carry, and that is a guarantee rather
-    than an observation: this function IS the refusal, so a raise escaping it
+    than an observation: this function is itself the refusal, so a raise escaping it
     exits non-zero, which the harness reports as a non-blocking error before
     running the command. The handler at the end holds it.
 
@@ -2140,7 +2139,7 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         )
         return True
     except BaseException:  # noqa: BLE001
-        # the net needs A net, and this is the net. Everywhere else a raise is
+        # The net needs a net, and this is the net. Everywhere else a raise is
         # caught and turned into a refusal; this function is the refusal, so a
         # fault here had nothing above it and escaped to a non-zero exit -- which
         # the harness reports as a non-blocking error before running the command.

@@ -41,7 +41,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 # `BLE` and `RUF100` are here for the same reason as each other. This hook
-# catches broadly ON PURPOSE wherever a raise would escape, because an escaping
+# catches broadly on purpose wherever a raise would escape, because an escaping
 # raise is a non-zero exit, which the harness reports as a non-blocking error
 # before running the command. Each such catch carries `# noqa: BLE001` to say
 # the breadth is deliberate. Without `BLE` selected those directives suppress
