@@ -1,9 +1,8 @@
-"""The frozen enumeration `SCOPE.md` describes, as code rather than as prose.
+"""The frozen enumeration the README's guarantee quantifies over, as code.
 
-The guarantee in the README quantifies over "shape it can read". A set that is only
-described cannot be audited, cannot be run, and drifts away from whatever does the
-checking -- so the cells live here, in the repository, and `SCOPE.md` narrates the
-axes and points at this file. There is one enumeration, not two.
+Each cell is swept along one axis against a baseline; the axes are not crossed with
+each other. Axis J holds the pairs the code couples, so an interaction outside J is
+outside the set.
 
 **No expected verdict is written down.** Each cell's answer comes from running the
 command in a throwaway repository and comparing the bytes:
@@ -12,14 +11,9 @@ command in a throwaway repository and comparing the bytes:
     executing it destroys nothing                         -> the hook must allow,
         unless the shape is in `DECLARED_OVER_REFUSALS`, where a deny is accepted
 
-Nothing is decided by judgement, so nothing can be re-decided later when a round
-finds something inconvenient. A shape outside this file is not a defect in the
-hook: it is a scope extension, which is an issue and a deliberate later change.
-
 Content means content no git object holds -- a tracked file's uncommitted change, an
 untracked or ignored file, a repository nested inside the worktree. Anything still
-reachable from a ref was not destroyed, which is why `stash` and a plain `reset` are
-outside these tables.
+reachable from a ref was not destroyed.
 """
 
 from __future__ import annotations
@@ -167,36 +161,34 @@ def build(where: Path, kind: str) -> Fixture:
     raise AssertionError(f"no fixture kind {kind!r}")
 
 
-# A deny is the accepted answer for these even though nothing is destroyed: telling
-# them apart from a real call is the parsing this hook declines to attempt, and the
-# README carries each one's reasoning. Part of the frozen set, so an addition here is
-# a deliberate scope decision and not a way to quiet a failing cell.
-DECLARED_OVER_REFUSALS = frozenset(
-    {
-        "A: substitution capture",
-        "A: process substitution",
-        "A: backticks",
-        "A: echoed verb",
-        "A: man page",
-        "A: grep for a verb",
-        "A: docker wrapper",
-        "A: sh -c payload",
-        "A: bisect reset",
-        "A: status with a verb operand",
-        "A: verb in a commit message body",
-        "C: unbalanced quote",
-        "E: bare cd",
-        "E: conditional cd",
-        "E: eval before a verb",
-        "F: relocating global",
-        "F: unknown global",
-        "F: GIT_DIR assignment",
-        "H: pathspec from file",
-        "H: unexpanded pathspec",
-        "J: non-repo x relocating global",
-        "J: wrapper x unreadable",
-    }
-)
+# Cells whose command destroys nothing and which the hook denies anyway. Each entry
+# carries its reason here, beside the name, because an entry's reason is what makes
+# the exemption reviewable and there is nowhere else that holds one.
+#
+# An entry only does work when its cell destroys nothing: with a loss the rule
+# demands a deny outright, so the exemption never gates anything. Twelve entries sat
+# here in that state until `test_every_declared_over_refusal_is_needed` was written
+# to measure it, so the test is what keeps the list from filling up again.
+DECLARED_OVER_REFUSALS = {
+    "A: echoed verb": (
+        "the text names a verb; reading it as a call is the parse this hook declines"
+    ),
+    "A: grep for a verb": "a pattern argument that happens to spell a call",
+    "A: man page": "the verb is the subject of another command, not the command",
+    "A: docker wrapper": "the call runs in a container this hook cannot measure",
+    "A: bisect reset": "a two-word subcommand whose second word is a covered verb",
+    "A: status with a verb operand": "a covered verb sitting in an operand position",
+    "A: verb in a commit message body": (
+        "a message this hook's own refusal invites people to write"
+    ),
+    "C: unbalanced quote": (
+        "the tokenizer falls back to a whitespace split, so the argument list runs long"
+    ),
+    "F: GIT_DIR assignment": (
+        "the assignment moves the tree, so a measurement here describes another one"
+    ),
+    "H: pathspec from file": "the pathspecs live in a file this hook does not read",
+}
 
 # (axis, label, command, fixture kind). `{other}` is filled in with the second
 # repository's path.
@@ -361,6 +353,8 @@ CELLS: list[tuple[str, str, str, str]] = [
         "git checkout --pathspec-from-file=list.txt",
         "tracked",
     ),
+    # I -- the override token: each cell needs two invocations, so those live in
+    # tests/test_hook.py with the other token round-trips.
     # J -- the pairs the code couples, where every fail-open so far has lived
     ("J", "force count x pathspec", "git clean -ff newmodule", "untracked"),
     ("J", "pathspec x collapsed dir", "git clean -f newmodule", "untracked"),
@@ -387,14 +381,33 @@ def name_of(axis: str, label: str) -> str:
 
 
 def execute(command: str, where: Path) -> None:
-    """Run the command for real. Its effect on the fixture is the oracle."""
+    """Run the command for real. Its effect on the fixture is the oracle.
+
+    `HOME` is pointed at the fixture, and that is not hygiene -- it is what keeps
+    this enumeration from destroying the machine it runs on. The cells are real
+    destructive commands run in a real shell, and one of them is `cd && git reset
+    --hard`: a bare `cd` goes to `$HOME`, so with the ambient value the hard reset
+    lands in the home directory. On a home-as-repository setup -- a dotfiles tree
+    checked out at `$HOME` is the common one -- `pytest` would then discard the
+    user's own uncommitted work, which is the exact loss this project exists to
+    prevent. Pointed at the fixture, the same cell lands in a throwaway tree.
+
+    `GIT_CONFIG_GLOBAL` goes with it: git resolves the global config under `HOME`,
+    so moving one without the other reads config from a path that now holds a
+    fixture. Silenced explicitly rather than left to follow `HOME`, so a cell's
+    answer cannot turn on whatever the machine's own git config happens to say.
+    """
     subprocess.run(
         command,
         shell=True,
         executable=CASE_SHELL,
         cwd=str(where),
         capture_output=True,
-        env=CASE_ENV,
+        env={
+            **CASE_ENV,
+            "HOME": str(where),
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        },
         timeout=30,
         stdin=subprocess.DEVNULL,
         check=False,

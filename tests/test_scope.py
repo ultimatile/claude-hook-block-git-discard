@@ -1,13 +1,13 @@
 """The acceptance condition, run rather than described.
 
 One test per cell of the enumeration in `scope_cases`, and the assertion is the rule
-`SCOPE.md` states: the hook must deny exactly when executing the command destroys
+that file states: the hook must deny exactly when executing the command destroys
 content that existed beforehand. No expected verdict is written anywhere; each cell
 runs the command and reads the bytes back.
 
-This runs in the ordinary suite -- 90 cells in about 15 seconds -- rather than behind
-a marker. Behind one, whether the acceptance condition was actually checked becomes
-unanswerable again, which is the failure this file exists to end.
+This runs in the ordinary suite rather than behind a marker. Behind one, whether the
+acceptance condition was actually checked becomes unanswerable again, which is the
+failure this file exists to end.
 
 The harness's own detector is tested first, below. A loss oracle that cannot report a
 loss would pass every cell while checking nothing.
@@ -79,11 +79,28 @@ def test_the_loss_oracle_reports_a_rewritten_file(tmp_path: Path) -> None:
     assert any("changed" in entry for entry in fixture.lost())
 
 
+def test_the_harness_cannot_reach_outside_its_fixture(tmp_path: Path) -> None:
+    """A cell is a real destructive command in a real shell, so where it lands is
+    part of the harness's contract rather than a detail.
+
+    `cd` with no operand goes to `$HOME`, and one cell is `cd && git reset --hard`.
+    With the ambient value that hard reset runs in the home directory, and on a
+    home-as-repository setup it discards the user's own uncommitted work -- running
+    the suite would cause the exact loss this project exists to prevent. This pins
+    the redirection that stops it, because nothing else about the suite would go
+    red if it were removed.
+    """
+    fixture = build(tmp_path / "cell", "tracked")
+    execute("cd && pwd > landed.txt", fixture.payload)
+    landed = Path((fixture.payload / "landed.txt").read_text().strip())
+    assert landed.resolve() == fixture.payload.resolve()
+
+
 def test_every_declared_over_refusal_names_a_cell() -> None:
     """A declaration for a cell that does not exist quietly stops meaning anything,
     and is the way a stale exception outlives the shape it excused."""
     known = {name_of(axis, label) for axis, label, _, _ in CELLS}
-    assert known >= DECLARED_OVER_REFUSALS, DECLARED_OVER_REFUSALS - known
+    assert known >= DECLARED_OVER_REFUSALS.keys(), DECLARED_OVER_REFUSALS.keys() - known
 
 
 def test_the_enumeration_has_no_duplicate_cells() -> None:
@@ -128,13 +145,45 @@ def test_the_hook_denies_exactly_what_destroys_content(
         assert name in DECLARED_OVER_REFUSALS, (
             f"{name}: `{command}` destroyed nothing, and the hook refused it. "
             f"Either the refusal is wrong or the shape belongs in "
-            f"DECLARED_OVER_REFUSALS with its reasoning in the README."
+            f"DECLARED_OVER_REFUSALS, with its reason beside it there."
         )
 
 
-def test_the_enumeration_covers_every_axis_scope_md_names() -> None:
-    """`SCOPE.md` narrates the axes; this file holds the cells. If an axis loses its
-    last cell the prose still claims coverage nothing checks."""
+def test_every_declared_over_refusal_is_needed(tmp_path: Path) -> None:
+    """An entry only does work when its cell destroys nothing.
+
+    With a loss the rule demands a deny outright, so the exemption never gates
+    anything and the entry is dead — present, reviewable, and inert. Twelve entries
+    were in that state before this test existed, which is how many a list checked
+    only for live names can accumulate: `test_every_declared_over_refusal_names_a_cell`
+    holds the name, and nothing held the exemption.
+    """
+    by_name = {name_of(axis, label): (t, k) for axis, label, t, k in CELLS}
+    dead = []
+    for entry in sorted(DECLARED_OVER_REFUSALS):
+        template, kind = by_name[entry]
+        fixture = build(tmp_path / entry.replace(":", "").replace(" ", "-"), kind)
+        command = template.replace("{other}", str(fixture.root / "other"))
+        fixture.risk(fixture.payload / "activate", b"export X=1\n")
+        fixture.risk(fixture.payload / "log.txt", b"nothing\n")
+        execute(command, fixture.payload)
+        if fixture.lost():
+            dead.append(f"{entry}: `{command}` destroys {fixture.lost()}")
+    assert not dead, (
+        "these entries exempt a refusal the rule already demands, so they gate "
+        "nothing:\n  " + "\n  ".join(dead)
+    )
+
+
+def test_every_declared_over_refusal_states_a_reason() -> None:
+    """The reason is what makes an exemption reviewable, and it lives beside the
+    entry because there is nowhere else that holds one."""
+    missing = [k for k, v in DECLARED_OVER_REFUSALS.items() if not v.strip()]
+    assert not missing, missing
+
+
+def test_the_enumeration_covers_every_axis() -> None:
+    """An axis that loses its last cell leaves the sweep it names unchecked."""
     axes = {axis for axis, _, _, _ in CELLS}
     assert axes == set("ABCDEFGHJ"), axes.symmetric_difference(set("ABCDEFGHJ"))
     assert scope_cases.CASE_SHELL.endswith("bash")
