@@ -23,11 +23,14 @@
 # SCOPE IS DELIBERATELY NARROW. The five verbs in COVERED are the ones an agent
 # actually types. Covering every git command that can destroy content -- plumbing
 # such as `read-tree -u` and `checkout-index -f`, sequencer aborts, `git rm -f`,
-# `clean.requireForce=false` -- means reproducing git's own worktree/index
-# normalization (filters, eol, symlinks, gitlinks, sparse entries). That buys
-# nothing here, because agents do not type those. Shapes outside the verb list
-# PASS THROUGH by design, not by oversight. So do names that only resolve at run
-# time -- `$GIT`, an alias, a shell function -- and a file run by `source` or `.`.
+# a `clean.requireForce=false` that arrives in a config FILE -- means reproducing
+# git's own worktree/index normalization (filters, eol, symlinks, gitlinks,
+# sparse entries), or querying a repository before the command is even read. That
+# buys nothing here, because agents do not type those. Shapes outside the verb
+# list PASS THROUGH by design, not by oversight. So do names that only resolve at
+# run time -- `$GIT`, an alias, a shell function -- and a file run by `source` or
+# `.`. The same waiver spelled into the command IS covered: it is a token in the
+# argv this hook already reads, and `force_waived` reads it there.
 #
 # A covered verb that cannot be measured is refused, not passed: a
 # `--git-dir`/`--work-tree` override moves the tree the command acts on, so any
@@ -998,16 +1001,12 @@ def force_waived(argv: list[str]) -> bool:
     """Whether `-c clean.requireForce=<false>` rides in the command's own argv.
 
     `git clean` refuses without `-f` -- unless that setting says otherwise, and
-    then a bare `git clean -d` deletes untracked directories. The header lists
-    this config among the things left uncovered, on the ground that following
-    every way git can be reconfigured means reproducing git's own worktree
-    normalization. That ground does not reach THIS spelling: the setting is a
-    token in the argv this hook already tokenizes, so reading it costs no query
-    and no normalization.
+    then a bare `git clean -d` deletes untracked directories. The setting is a
+    token in the argv this hook already tokenizes, so reading it here costs no
+    query and no normalization.
 
     What stays uncovered is the same setting in a config FILE. Reading that needs
-    a repository query this function does not make, and the reasoning above does
-    not extend to it.
+    a repository query this function does not make.
 
     Only the separate spelling is checked, because only the separate spelling
     exists: `git -cclean.requireForce=false` exits 129 as an unknown option. The
