@@ -1,6 +1,6 @@
 """Test support: run the hook the way the harness runs it.
 
-The hook is exercised as a SUBPROCESS rather than by importing `main` and calling
+The hook is exercised as a subprocess rather than by importing `main` and calling
 it, and that is not incidental. Its central guarantee is that every path after
 recognition reaches `print()` and exits 0 -- a hook that exits non-zero is
 reported by Claude Code as a non-blocking error and the command then runs, which
@@ -28,8 +28,8 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """The environment the hook is launched with.
 
     The console script's shebang is an absolute path into the project venv, so
-    unlike a `#!/usr/bin/env` script the interpreter is fixed and PATH cannot
-    redirect it. PATH still matters for what the hook itself shells out to --
+    unlike a `#!/usr/bin/env` script the interpreter is fixed and path cannot
+    redirect it. path still matters for what the hook itself shells out to --
     `git` -- so the ambient environment is passed through rather than trimmed.
     """
     return {**os.environ, **(extra or {})}

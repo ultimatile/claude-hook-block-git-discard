@@ -27,7 +27,7 @@ HOOK = "block-git-discard"
 
 
 def verdict(command: str, payload: Path) -> tuple[str, str]:
-    """(ALLOW | DENY | ERROR, and for a deny whether it named what is at stake)."""
+    """(allow | deny | error, and for a deny whether it named what is at stake)."""
     script = VENV_BIN / HOOK
     if not script.exists():
         pytest.fail(f"{script} is missing -- run `uv sync`.")
@@ -110,7 +110,7 @@ def test_the_hook_denies_exactly_what_destroys_content(
     fixture = build(tmp_path / "cell", kind)
     command = template.replace("{other}", str(fixture.root / "other"))
     # Registered rather than merely written: these are untracked files, so a `clean`
-    # that removes them HAS destroyed content, and leaving them out of the at-risk
+    # that removes them has destroyed content, and leaving them out of the at-risk
     # set turns a correct refusal into a reported over-refusal.
     fixture.risk(fixture.payload / "activate", b"export X=1\n")
     fixture.risk(fixture.payload / "log.txt", b"nothing\n")
@@ -137,7 +137,7 @@ def test_the_hook_denies_exactly_what_destroys_content(
 
 
 def test_every_declared_over_refusal_is_needed(tmp_path: Path) -> None:
-    """An entry does work only when its cell destroys nothing AND is refused.
+    """An entry does work only when its cell destroys nothing and is refused.
 
     Both halves are load-bearing, and each fails in its own direction. With a
     loss the rule demands a deny outright, so the exemption gates nothing. With

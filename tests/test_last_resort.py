@@ -75,7 +75,7 @@ def dirty_repo(tmp_path: Path) -> Path:
 
 
 def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
-    """Deriving the override token happens INSIDE the refusal, so a fault there
+    """Deriving the override token happens inside the refusal, so a fault there
     escapes the refusal itself unless something catches it there. A lone
     surrogate in the command text is such a fault, and what it escapes into is
     a non-zero exit, which the harness reports as a non-blocking error before

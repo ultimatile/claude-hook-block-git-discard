@@ -119,7 +119,7 @@ def build(where: Path, kind: str) -> Fixture:
     f = Fixture(where, main)
 
     if kind == "clean-payload":
-        # Nothing at risk in the payload tree on purpose: an ALLOW here must not be
+        # Nothing at risk in the payload tree on purpose: an allow here must not be
         # explainable by the hook having measured the right tree and found it empty.
         f.risk(base_repo(where / "other") / "a.txt", b"PRECIOUS elsewhere\n")
         return f
@@ -165,7 +165,7 @@ def build(where: Path, kind: str) -> Fixture:
 # carries its reason here, beside the name, because an entry's reason is what makes
 # the exemption reviewable and there is nowhere else that holds one.
 #
-# An entry does work only when its cell destroys nothing AND the hook refuses it:
+# An entry does work only when its cell destroys nothing and the hook refuses it:
 # a loss makes the deny the rule's own answer, and an allow leaves no refusal to
 # exempt. Either way the entry is dead -- present, reviewable, and inert.
 # `test_every_declared_over_refusal_is_needed` asks the hook and then runs the

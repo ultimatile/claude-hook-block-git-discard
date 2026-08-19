@@ -70,7 +70,7 @@ def test_the_wheel_carries_what_the_entry_points_need(wheel: Path, module: str) 
     """`block-git-discard = "block_git_discard:main"` reaches `main` through
     `__init__`, which imports it from `hook`, which imports `tokenize` and
     `is_separator` from `shell_tokens`. `python -m block_git_discard` is the
-    second door and reaches `main` through `__main__`. A wheel missing ANY of
+    second door and reaches `main` through `__main__`. A wheel missing any of
     them resolves its entry point and then fails at import time -- a non-zero
     exit, which the harness reports as a non-blocking error before running the
     command.
@@ -85,7 +85,7 @@ def test_the_wheel_carries_what_the_entry_points_need(wheel: Path, module: str) 
 
 def test_the_module_entry_denies_a_discarding_command(tmp_path: Path) -> None:
     """`python -m block_git_discard` is the door reached when the console script
-    is not on PATH, and it enters through `__main__` rather than through the
+    is not on path, and it enters through `__main__` rather than through the
     entry point every other test here exercises. Nothing else runs that module,
     so a `__main__` that stops calling `main` prints nothing, exits 0, and lets
     the command run -- the fail-open shape read as an allow."""
