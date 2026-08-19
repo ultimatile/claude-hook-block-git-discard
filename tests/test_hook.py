@@ -3318,3 +3318,25 @@ def test_the_query_helper_refuses_a_verb_that_is_not_read_only(tmp_path: Path) -
     # And the guard is not simply rejecting everything.
     repo = init(tmp_path / "r")
     assert git(str(repo), "rev-parse", "--is-inside-work-tree").strip() == "true"
+
+
+def test_an_untracked_entry_that_cannot_be_stat_ed_still_fingerprints(
+    deny_reason: HookRunner, repo: Path
+) -> None:
+    """The untracked fingerprint stats each entry git lists, and a dangling
+    symlink is listed and cannot be stat'ed. The walk has to finish: this runs
+    while the override token is being derived, and a raise there reaches
+    `LAST_RESORT`, which carries no token -- so a caller who did mean to discard
+    would have no way through.
+    """
+    (repo / "dangling.link").symlink_to(repo / "absent.txt")
+    reason = deny_reason(HOOK, "git clean -f", payload_cwd=repo)
+    assert reason is not None
+
+    # A MEASURED refusal. Every other refusal is a deny too, and an unmeasured
+    # one interpolates the exception -- whose text carries the very filename and
+    # whose message carries a token, so naming the file and finding an ack are
+    # both satisfied by the failure this is meant to exclude. "At stake" is
+    # printed only where the walk finished.
+    assert "At stake" in reason, reason
+    assert "dangling.link" in reason

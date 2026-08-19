@@ -43,8 +43,9 @@ commands are denied with:
 - a preservation command chosen for the content at risk
 - an override token
 
-The override token is bound to both the exact command and the content at risk.
-Changing either invalidates the token.
+The override token is bound to the command and to the content at risk. Changing
+either invalidates it. Re-spacing the same command does not, so the token still
+matches wherever on the line you append it.
 
 ## Scope
 
