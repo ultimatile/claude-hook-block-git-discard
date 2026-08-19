@@ -26,7 +26,8 @@
 # `clean.requireForce=false` -- means reproducing git's own worktree/index
 # normalization (filters, eol, symlinks, gitlinks, sparse entries). That buys
 # nothing here, because agents do not type those. Shapes outside the verb list
-# PASS THROUGH by design, not by oversight.
+# PASS THROUGH by design, not by oversight. So do names that only resolve at run
+# time -- `$GIT`, an alias, a shell function -- and a file run by `source` or `.`.
 #
 # A covered verb that cannot be measured is refused, not passed: a
 # `--git-dir`/`--work-tree` override moves the tree the command acts on, so any
@@ -38,8 +39,13 @@
 # What "cannot be measured" means is narrow, and the narrowing is the invariant:
 # this guards content that EXISTS WHEN THE HOOK DECIDES. A refusal is for a tree
 # that is there but hidden from the query -- relocated, reached through a `cd`
-# the shell may not have run, named by a payload carrying no directory. A path
-# that does not exist yet is not hidden; it holds nothing OF ITS OWN, and
+# the shell may not have run, moved by a `cd` inside text this hook cannot read
+# (`eval`, `sh -c`), named by a payload carrying no directory. A `cd` inside a
+# `source`d file is the deliberate exception: refusing every
+# `. .venv/bin/activate && ...` taxes a line typed constantly over a movement
+# almost never in it.
+#
+# A path that does not exist yet is not hidden; it holds nothing OF ITS OWN, and
 # reading that as "unknown" refuses a line while protecting nothing. So
 # `cd repo && git checkout <branch>` is left alone whether `repo` was produced by
 # `git clone`, `ghq get`, `gh repo clone`, `git worktree add` or anything else --
@@ -281,11 +287,12 @@ def mask_quoted(text: str) -> str:
 
 
 def strip_fd_prefixes(command: str) -> str:
-    """Delete a descriptor number written against a redirection, quoting respected.
+    """Blank a descriptor number written against a redirection, quoting respected.
 
     ` 2>` is a redirection between words and part of the filename inside quotes.
-    The match therefore runs over the mask and the span is cut from the original,
-    which also settles a digit that only looks unquoted because of what precedes
+    The match therefore runs over the mask, and the span is overwritten in the
+    original with as many spaces, which keeps every later match's offsets valid.
+    Quoting also settles a digit that only looks unquoted because of what precedes
     it: in `"x"2>log` the shell reads the word as `x2`, and through the mask the
     digit has a masked character in front of it rather than whitespace, so it does
     not match.

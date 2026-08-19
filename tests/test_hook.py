@@ -3241,10 +3241,55 @@ def test_an_unreadable_subcommand_position_costs_a_refusal(
     looking ahead from it lets a worktree go, so the refusal is bought
     deliberately.
 
-    `README.md` lists both in its false-positive table. This test is what keeps
+    `README.md` lists both in its false-positive block. This test is what keeps
     that list from going stale in the direction that matters: narrowing the
     look-ahead allows these again, and the README would then promise a refusal
     the hook does not make.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
+
+
+def test_a_tree_mark_survives_a_file_it_cannot_stat(tmp_path: Path) -> None:
+    """A broken symlink is walked and cannot be stat'ed.
+
+    The walk has to finish. This runs while a token is being derived, and a raise
+    there reaches the caller as `LAST_RESORT` — a refusal that carries no
+    override token at all, so the caller who did mean to discard has nowhere to
+    go.
+    """
+    from block_git_discard.hook import tree_mark
+
+    (tmp_path / "kept.txt").write_text("x")
+    (tmp_path / "dangling").symlink_to(tmp_path / "absent.txt")
+
+    mark = tree_mark(tmp_path)
+
+    assert "dangling\0gone" in mark
+    assert "kept.txt\0" in mark
+
+
+def test_a_capped_tree_mark_is_stable_over_what_it_did_not_reach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap bounds the walk, and the mark says the walk stopped.
+
+    A token is minted on one run and checked on the next, so a mark that reads
+    part of a tree has to read the same part both times. Content past the cap is
+    outside what the token is bound to, which is the cost this pins: editing a
+    file the walk never reached leaves the token unlocking the tree.
+    """
+    import block_git_discard.hook as h
+
+    monkeypatch.setattr(h, "TREE_MARK_LIMIT", 3)
+    for i in range(6):
+        (tmp_path / f"f{i}.txt").write_text("x")
+
+    before = h.tree_mark(tmp_path)
+    assert before.endswith("capped-at-3")
+    assert "f0.txt\0" in before
+    assert "f3.txt\0" not in before
+
+    (tmp_path / "f5.txt").write_text("changed")
+    (tmp_path / "f9.txt").write_text("new")
+    assert h.tree_mark(tmp_path) == before
