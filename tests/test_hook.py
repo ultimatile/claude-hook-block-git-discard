@@ -1599,10 +1599,7 @@ def test_sourcing_a_file_is_a_declared_exclusion_not_a_refusal(
     """`.` and `source` read a FILE this hook does not, and refusing every one is
     a tax on a line agents type constantly (`. .venv/bin/activate && ...`).
 
-    So they sit with the other run-time resolutions the README declares out of
-    scope -- an alias, a shell function, a name that only becomes `git` when the
-    shell expands it. A `cd` inside such a file is not followed, which is the cost
-    named there.
+    A `cd` inside such a file is not followed; that is the cost.
     """
     (repo / "activate").write_text("export X=1\n")
     assert (
@@ -3204,11 +3201,6 @@ def test_an_unreadable_subcommand_position_costs_a_refusal(
     verb lands one position further along. Giving up on that position instead of
     looking ahead from it lets a worktree go, so the refusal is bought
     deliberately.
-
-    `README.md` lists both in its false-positive block. This test is what keeps
-    that list from going stale in the direction that matters: narrowing the
-    look-ahead allows these again, and the README would then promise a refusal
-    the hook does not make.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command

@@ -1,139 +1,66 @@
 # PreToolUse hook: bounce a git command that would discard uncommitted work.
 #
-# `git checkout -- <file>` restores the file from the index, and takes every
-# OTHER uncommitted change in that file with it. The revert's granularity is the
-# file; the intent's is almost always one hunk. Nothing warns, and the loss reads
-# as though the edit never applied. That has cost real work more than once.
+# `git checkout -- <file>` restores the file from the index and takes every OTHER
+# uncommitted change in that file with it, with no warning and nothing for
+# `git fsck` to find afterwards. That loss is what this guards, and it is why the
+# polarity below is unusual.
 #
-# This does not pattern-match "dangerous-looking" commands. It runs the same
-# read-only query git would and denies on what that query reports, so a checkout
-# with nothing to lose is not in the way.
+# It does not pattern-match dangerous-looking commands: it runs the same
+# read-only query git would and denies on what that query reports.
 #
-# Where the command's reach cannot be narrowed exactly, the report widens rather
-# than narrows, and the deny follows the wider report. That is the rule, not a
-# list -- a list would have to grow with every such site and would go quiet on
-# whichever one was added without it. Representative sites: a pathspec the shell
-# has not expanded yet, which cannot be forwarded to git and so falls back to the
-# whole tree; `clean -e`, whose repeatable exclude values are not worth the
-# spelling surface it would take to forward them; a `cd` whose target the shell
-# has still to expand; and any covered verb whose measurement fails outright.
-# When a report is widened, the reason says so -- a file the command visibly does
-# not name otherwise reads as a hook that measured the wrong thing.
+# Where the command's reach cannot be narrowed exactly, the report widens and the
+# deny follows the wider report. That is a rule and not a list -- a list would
+# have to grow with every such site and would go quiet on whichever one was added
+# without it.
 #
-# SCOPE IS DELIBERATELY NARROW. The five verbs in COVERED are the ones an agent
-# actually types. Covering every git command that can destroy content -- plumbing
-# such as `read-tree -u` and `checkout-index -f`, sequencer aborts, `git rm -f`,
-# a `clean.requireForce=false` that arrives in a config FILE -- means reproducing
-# git's own worktree/index normalization (filters, eol, symlinks, gitlinks,
-# sparse entries), or querying a repository before the command is even read. That
-# buys nothing here, because agents do not type those. Shapes outside the verb
-# list PASS THROUGH by design, not by oversight. So do names that only resolve at
-# run time -- `$GIT`, an alias, a shell function -- and a file run by `source` or
-# `.`. The same waiver spelled into the command IS covered: it is a token in the
-# argv this hook already reads, and `force_waived` reads it there.
+# SCOPE IS DELIBERATELY NARROW, and the narrowing is a decision rather than an
+# omission: the five verbs in COVERED are the ones an agent actually types.
 #
-# A covered verb that cannot be measured is refused, not passed: a
-# `--git-dir`/`--work-tree` override moves the tree the command acts on, so any
-# measurement taken here would describe a different one. A `GIT_*` assignment in
-# front of the command is refused on the same ground and reaches the guard by a
-# different door -- assignments are stepped over so that `LC_ALL=C git ...` stays
-# recognized, and `GIT_DIR=<other> git reset --hard` rides in on that.
-#
-# What "cannot be measured" means is narrow, and the narrowing is the invariant:
-# this guards content that EXISTS WHEN THE HOOK DECIDES. A refusal is for a tree
-# that is there but hidden from the query -- relocated, reached through a `cd`
-# the shell may not have run, moved by a `cd` inside text this hook cannot read
-# (`eval`, `sh -c`), named by a payload carrying no directory. A `cd` inside a
-# `source`d file is the deliberate exception: refusing every
-# `. .venv/bin/activate && ...` taxes a line typed constantly over a movement
-# almost never in it.
-#
-# A path that does not exist yet is not hidden; it holds nothing OF ITS OWN, and
-# reading that as "unknown" refuses a line while protecting nothing. So
-# `cd repo && git checkout <branch>` is left alone whether `repo` was produced by
-# `git clone`, `ghq get`, `gh repo clone`, `git worktree add` or anything else --
-# the reading follows from the separator, and never from a list of
-# directory-producing commands, which has no boundary to enumerate.
+# What "cannot be measured" means is narrow too, and that narrowing is the
+# invariant: this guards content that EXISTS WHEN THE HOOK DECIDES. A tree that
+# is there but hidden from the query is refused. A path that does not exist yet
+# is not hidden; it holds nothing OF ITS OWN, and reading that as "unknown"
+# refuses a line while protecting nothing.
 #
 # "Of its own" is the whole qualification, and it was learned the hard way: git
-# resolves UPWARDS, so a command run in a directory this line creates still
+# resolves UPWARDS, so a command run in a directory the same line creates still
 # reaches the repository above it. `mkdir -p d && cd d && git reset --hard`
 # destroyed an enclosing tree on the unqualified reading. The measurement
-# therefore falls back to the nearest directory that already exists, and passes
-# only when that one is in no repository either -- which costs a refusal when a
-# clone lands inside a dirty repository, a distinction nothing here can make in
-# advance. The residue left unguarded is content the same line MOVES into the
-# target (`mv <dirty-repo> new && cd new && git reset --hard`): it exists at
-# decision time, at a path nothing here can connect to the one named.
-#
-# A forced switch is measured against the whole worktree, but an untracked file
-# that the target branch would write over is not. Catching that needs the target
-# tree, and the cheap substitute -- measuring every untracked file -- would deny
-# on any tree carrying one, which is most of them.
-#
-# Two further kinds of content stay unprotected under a covered verb. Content git
-# does not report as changed -- `assume-unchanged`, `skip-worktree`, a lossy
-# clean filter -- is invisible to the query asked here. And content that exists
-# only in the index, staged and then reverted in the worktree, is left alone on
-# purpose: `git add` wrote that blob into the object store, so `git fsck` can
-# still reach it and losing the index entry is not the irreversible kind of loss
-# this guards against.
-#
-# The reason is the real payload. It names what is at stake, offers a way to keep
-# a recoverable copy FIRST, and only then the override -- because the agent, not
-# the human who would see a permission prompt, is the one who knows which hunk
-# was its own throwaway edit. Those routes are whole-file (`stash push`, a saved
-# patch) rather than hunk-level: hunk-level means `-p`, which wants a terminal
-# the denied caller does not have.
+# therefore falls back to the nearest directory that already exists.
 #
 # FAIL-CLOSED, which is the unusual choice and the deliberate one. A PreToolUse
 # hook that cannot make sense of its input normally lets the command through:
-# being wrong that way costs a redo. This one guards a loss that no redo
-# reaches, so it refuses instead.
+# being wrong that way costs a redo. This one guards a loss that no redo reaches,
+# so it refuses instead. A false positive here costs one override token.
 #
-# The guarantee has a floor worth stating: a hook that exits non-zero is
-# reported as a non-blocking error and the command then runs, so every path
-# after recognition must reach print() rather than raise. That includes the
-# paths that DO the refusing -- `deny_unmeasured` carries its own handler for
-# exactly this, after a command holding one unencodable character raised inside
-# the override-token hash and turned a decided refusal into a discard.
-# Failures before main() -- import, syntax, an unusable interpreter -- cannot be
-# caught from inside this file at all.
+# The floor under that: a hook that exits non-zero is reported as a non-blocking
+# error and the command then runs, so every path after recognition must reach
+# print() rather than raise. That includes the paths that DO the refusing --
+# `deny_unmeasured` carries its own handler for exactly this, after a command
+# holding one unencodable character raised inside the override-token hash and
+# turned a decided refusal into a discard. Failures before main() -- import,
+# syntax, an unusable interpreter -- cannot be caught from inside this file.
 #
 # THE PARSE FAILS CLOSED TOO, and that half is the harder one. A MEASUREMENT
 # failure is loud: the hook knows which call it could not answer for. A
 # RECOGNITION failure is silent -- a covered verb this hook cannot read as a call
 # is indistinguishable from a shape it does not cover, and silence reaches the
-# caller as permission. Every parser gap has that one signature, whatever the
-# underlying mistake: a covered verb in the text with no recognized call to
-# account for it. `main` counts the two and refuses when the text names more
-# than the parse read.
-#
-# That test is why the shell parsing here stays shallow. `echo git reset --hard
-# >> log`, `man git checkout` and `docker run IMG git clean -fdx` are each `git`
-# beside a covered verb with no call read from them, which is also the exact
-# signature of a parse gap. Telling the two apart is precisely the parsing this
-# hook declines to attempt. The refusals cost an override token.
-#
-# Two neighbouring shapes are refused or allowed on other grounds, and reading
-# them as this count's work misstates both. A here-document body is read as
-# ordinary commands, so a script that merely writes a covered call HAS a call
-# read from it: what refuses it is the measurement, and only where the tree holds
-# something to lose. A covered verb inside the arguments of an inert subcommand
-# goes the other way -- `INERT_SUBCOMMANDS` keeps it out of the count, so a
-# commit message spelling one is left alone.
+# caller as permission. Every parser gap has that one signature: a covered verb
+# in the text with no recognized call to account for it. `main` counts the two
+# and refuses when the text names more than the parse read. That count is why the
+# shell parsing here stays shallow, and telling a gap from a mention is precisely
+# the parsing this hook declines to attempt.
 #
 # The backstop's own floor: both halves of the call have to be WRITTEN in the
 # text. The name is read off the characters around it, so it need not be a word
-# of its own -- `x=$(git reset --hard)` and `cat <(git reset --hard)` are read.
-# The verb still has to arrive as a word. What stays out of reach is a name that
-# is NOWHERE in the text -- `$GIT reset --hard`, `${GIT} clean -fdx` -- and a
-# VERB that is the same, which is what a `git co` alias is: both are invisible to
-# both parsers alike, because resolving either means reading the environment or
-# the config the command will run under, and this hook reads neither.
-# `$(echo git) reset --hard` is NOT one of them: the word `git` is written down,
-# so it is read and the line is refused.
-# So "never under-refuse" is not a guarantee it can make; what it holds to is
+# of its own -- `x=$(git reset --hard)` and `cat <(git reset --hard)` are read,
+# and so is `$(echo git) reset --hard`, because the word `git` is written down.
+# What stays out of reach is a name that is NOWHERE in the text (`$GIT`), and a
+# VERB that is the same, which is what a `git co` alias is: resolving either means
+# reading the environment or the config the command will run under, and this hook
+# reads neither.
+#
+# So "never under-refuse" is not a guarantee it can make. What it holds to is
 # narrower and true: no shape it can READ is under-refused, and a shape it cannot
 # read is refused rather than passed.
 
@@ -1562,12 +1489,10 @@ SHELL_WRAPPERS = ("builtin", "command")
 # Text this hook does not read, executed in the CURRENT shell, so a `cd` inside it
 # is invisible here and moves the shell anyway.
 #
-# `source` and `.` are deliberately NOT here. They read a FILE, which puts them
-# with the other run-time resolutions the README declares out of scope -- an alias,
-# a shell function, a name that only becomes `git` once the shell expands it -- and
-# refusing every one of them taxes `. .venv/bin/activate && ...`, a line agents
-# type constantly. A `cd` inside such a file is not followed; that is the cost, and
-# it is named rather than paid for by everyone.
+# `source` and `.` are deliberately NOT here. They read a FILE, so what they run
+# resolves at run time, and refusing every one of them taxes
+# `. .venv/bin/activate && ...`, a line agents type constantly. A `cd` inside such
+# a file is not followed; that is the cost.
 RUNS_TEXT = ("eval",)
 
 # `command`'s options are a closed set, which is what makes them safe to read

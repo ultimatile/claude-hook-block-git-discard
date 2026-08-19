@@ -72,6 +72,15 @@ readable scope.
 Git plumbing commands, sequencer aborts, and `git rm -f` are also outside the
 covered command set.
 
+Under a covered command, three kinds of content are not measured. Content Git
+does not report as changed — `assume-unchanged`, `skip-worktree`, a lossy clean
+filter — is invisible to the query. An untracked file that a forced switch would
+overwrite is not measured either; catching it needs the target tree, and
+measuring every untracked file instead would deny on almost any working tree.
+And content the same command line moves into place, as in
+`mv <dirty-repo> new && cd new && git reset --hard`, exists when the hook
+decides but at a path it cannot connect to the one named.
+
 Known gaps include:
 
 - `clean.requireForce=false` supplied through a Git config file;
