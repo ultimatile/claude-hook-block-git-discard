@@ -236,7 +236,7 @@ def test_staged_only_content_is_not_protected(
     leaves the content reachable via `git fsck` — recoverable, and not the
     irreversible loss this hook guards. The hook measures worktree-versus-index,
     which reports nothing in this state; that is the designed outcome, not an
-    oversight, and the header says so.
+    oversight.
     """
     (repo / "a.txt").write_text("STAGED\n")
     git(repo, "add", "a.txt")
@@ -2991,8 +2991,7 @@ def test_the_clean_force_config_is_read_out_of_the_argv(
     """`git clean` refuses without `-f` unless this setting says otherwise, and
     then a bare `git clean -d` deletes untracked directories. The setting is a
     token in the argv the hook already tokenizes, so reading it needs no query
-    and no reproduction of git's normalization -- the ground on which the header
-    leaves the config generally uncovered."""
+    and no reproduction of git's normalization."""
     untracked(repo)
     command = f"git -c clean.requireForce=false {CL} -d"
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None

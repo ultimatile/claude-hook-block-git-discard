@@ -369,23 +369,18 @@ def mentions(command: str) -> int:
                 inert = rest[0]
             else:
                 # The subcommand position holds a word that is neither, which
-                # means this crude split has lost the boundary rather than found
-                # a subcommand nothing here covers. Splitting on whitespace tears
-                # a quoted option value in two -- `-c user.name="John Doe"`
-                # becomes `-c`, `user.name="John`, `Doe"` -- and `-c` consumes
-                # only the first half, so the verb after it lands one position
-                # further along than the subcommand test looks. On `git -c
-                # user.name="John Doe" reset --hard; sh -c 'git clean -fdx'` that
-                # costs the count exactly one call -- enough to match what the
-                # real parser measures, which is what silences the backstop.
+                # means this crude split lost the boundary rather than found a
+                # subcommand nothing here covers: splitting on whitespace tears a
+                # quoted option value in two -- `-c user.name="John Doe"` becomes
+                # `-c`, `user.name="John`, `Doe"` -- and `-c` consumes only the
+                # first half, so the verb lands one position further along than
+                # the subcommand test looks.
                 #
-                # So when the position cannot be read, look ahead instead of
-                # giving up: a covered verb further along, before the next
-                # separator, is counted. That over-counts a line like
-                # `git status --short reset`, and it over-counts `git bisect
-                # reset`, which discards nothing and which an agent does type --
-                # one refusal each, no loss, and the alternative is the fail-open
-                # above.
+                # So look ahead instead of giving up: a covered verb before the
+                # next separator is counted. That over-counts `git status --short
+                # reset` and `git bisect reset`, which discard nothing and which an
+                # agent does type -- one refusal each, and the alternative is the
+                # fail-open above.
                 for j, raw in enumerate(raws):
                     if any(ch in raw for ch in SEPARATORS):
                         break
@@ -691,7 +686,7 @@ GIT_VALUE_OPTS = frozenset(
 # `-C` and `-c` are here because neither is stepped over blindly: `-C` is
 # collected and its directories resolved, and `-c` is read for the one setting
 # that waives git's own refusal. What the rest of a `-c` carries is config, which
-# the header already lists among the things this hook does not follow.
+# this hook does not read.
 GIT_INERT_GLOBALS = frozenset(
     {"-C", "-c", "-p", "-P", "--paginate", "--no-pager", "--no-optional-locks"}
 )
@@ -1868,19 +1863,15 @@ def build_reason(
     # git's directory and not the shell's, so under it the patch route writes
     # keep.patch wherever the caller happens to stand while the patch body names
     # root-relative paths -- and `git apply keep.patch` from there exits 0 having
-    # restored nothing. A route that reports success and returns none of the
-    # content is worse than no route at all, this being the one the caller
-    # reaches for precisely when the content matters. One directory for
-    # everything is also one rule to hold: the paths listed above are relative to
-    # that same root.
+    # restored nothing. One directory for everything is also one rule to hold:
+    # the paths listed above are relative to that same root.
     #
     # Neither route promises the restore succeeds. A covered verb may move the
     # branch as well as the tree (`git checkout -f <branch>`), and a copy taken
     # against the old commit can then refuse to go back on: `git stash pop`
     # exits 1 on conflict and `git apply` reports "patch does not apply". What
     # both do guarantee is that the copy outlives the failure -- the stash entry
-    # is kept, the patch file stays on disk -- and that is the part the caller is
-    # deciding on here, so it is the part the message states.
+    # is kept, the patch file stays on disk -- which is what the message states.
     # Listed without `EITHER`, with "Both ... Run them" as the only quantifier on
     # offer, the pair reads as two steps: stash first, then diff -- which diffs a
     # tree the stash has already cleaned, writes a 0-byte keep.patch, and ends at
@@ -2159,7 +2150,7 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
 def main() -> None:
     # A payload this hook cannot parse is allowed through: it is not evidence of
     # a discard, and refusing on it would refuse every command the harness sends.
-    # After recognition the polarity flips: see the header.
+    # After recognition the polarity flips to fail-closed.
     try:
         data = json.load(sys.stdin)
         command = data.get("tool_input", {}).get("command", "")
@@ -2193,11 +2184,10 @@ def main() -> None:
         recognized += 1
 
         # Everything from here on runs inside the handler, because from here on
-        # the shape is one of the covered ones and the header's guarantee has
-        # taken effect: a raise would exit non-zero, which the harness reports as
-        # a non-blocking error and then runs the command. Recognition itself
-        # stays outside -- a failure there is "a shape we do not cover", which
-        # has no business denying.
+        # the shape is one of the covered ones: a raise would exit non-zero, which
+        # the harness reports as a non-blocking error and then runs the command.
+        # Recognition itself stays outside -- a failure there is "a shape we do
+        # not cover", which has no business denying.
         try:
             # Settle what can be settled without the repository. A dry run or an
             # interactive form denies nothing, and it denies nothing wherever it
@@ -2325,27 +2315,21 @@ def main() -> None:
                 return
             continue
 
-    # the parse itself fails closed, and this is where that happens. Everything
-    # above answers about calls this hook managed to read; a covered verb it
-    # failed to read is not answered at all, and "not answered" reaches the
-    # caller as silence -- the command runs. Every parser gap found here has
-    # surfaced that way: a `$(...)` splitting the line at the tokenizer's `(`, a
-    # here-document delimiter misread, a `<<<` swallowing the tail. Each was a
-    # different mistake with one signature, which is a covered verb sitting in
-    # the text with no recognized call to account for it.
+    # Where the parse fails closed. Everything above answers about calls this hook
+    # read; a covered verb it failed to read is not answered at all, and silence
+    # reaches the caller as permission. Parser gaps differ in the mistake and
+    # agree in the signature: a covered verb in the text with no recognized call
+    # to account for it.
     #
-    # So that signature is the test. It counts rather than matches, because one
-    # unread call among several read ones has to refuse too. It is deliberately
-    # cruder than the parse it backstops: it reads a command name off the
-    # characters around it and knows nothing of who owns the line, so a `git`
-    # that is an argument to something else -- `echo git reset --hard >> log` --
-    # reads as a call and is refused. That is the cost of the guarantee, and it
-    # is a token, not a loss.
+    # So the signature is the test, and it counts rather than matches, because one
+    # unread call among several read ones has to refuse too. It is cruder than the
+    # parse it backstops, which is what makes `echo git reset --hard >> log` cost a
+    # token.
+    #
     # `mentions` re-reads the raw command, so it can fail on the same input the
-    # parse above did -- and it is the last thing this hook does, with nothing
-    # after it to notice. A count that could not be taken is not a count of zero:
-    # it is one more covered verb this hook could not read, which is the exact
-    # condition this backstop refuses on.
+    # parse above did -- and nothing runs after it to notice. A count that could
+    # not be taken is not a count of zero: it is one more covered verb this hook
+    # could not read.
     try:
         unread = mentions(command) > recognized
     except BaseException:  # noqa: BLE001
