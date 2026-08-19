@@ -14,32 +14,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import HookRunner
+from conftest import HookRunner, commit_all, dirty, git, init, repo_holding_work
 
 # The console script `[project.scripts]` installs, which is what settings.json
 # invokes. `conftest` resolves it in this checkout's venv.
 HOOK = "block-git-discard"
 ACK = re.compile(r"ack:([0-9a-f]{16})")
-
-
-def git(repo: Path, *args: str) -> str:
-    proc = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
-    return proc.stdout
-
-
-def init(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    git(path, "init", "-q", ".")
-    git(path, "config", "user.email", "t@t")
-    git(path, "config", "user.name", "t")
-    return path
-
-
-def commit_all(repo: Path, message: str = "c1") -> None:
-    git(repo, "add", ".")
-    git(repo, "commit", "-qm", message)
 
 
 @pytest.fixture
@@ -51,11 +31,6 @@ def repo(tmp_path: Path) -> Path:
     commit_all(r)
     git(r, "branch", "other")
     return r
-
-
-def dirty(repo: Path, name: str = "a.txt", text: str = "DIRTY\n") -> Path:
-    (repo / name).write_text(text)
-    return repo / name
 
 
 def untracked(repo: Path, name: str = "untracked.txt") -> Path:
@@ -82,20 +57,6 @@ def tracked_dirty(repo: Path, name: str, message: str = "add") -> Path:
     commit_all(repo, message)
     target.write_text("DIRTY\n")
     return target
-
-
-def repo_holding_work(path: Path) -> Path:
-    """A second repository with an uncommitted change, built at `path`.
-
-    Several tests need one: the question they ask is whether the hook measured
-    the directory the command will actually run in, and that only has an answer
-    when the two candidates differ in what is at stake.
-    """
-    r = init(path)
-    (r / "a.txt").write_text("v1\n")
-    commit_all(r)
-    dirty(r, text="PRECIOUS\n")
-    return r
 
 
 def clean_repo(path: Path) -> Path:
@@ -420,7 +381,7 @@ def test_a_verb_inside_an_inert_subcommands_arguments_is_left_alone(
 
     The allowlist behind this is the safe direction: an omission from it costs a
     refusal, while listing the subcommands that DO run an argument would make an
-    omission a hole — and `submodule foreach`, `bisect run` and
+    omission a hole — and `submodule foreach`, `bisect run`, `rebase -x` and
     `-c alias.x='!...'` were each confirmed by execution to discard that way.
     """
     dirty(repo)
@@ -433,6 +394,7 @@ def test_a_verb_inside_an_inert_subcommands_arguments_is_left_alone(
         "git submodule foreach 'git reset --hard'",
         "git bisect run git reset --hard",
         "git -c alias.zz='!git reset --hard' zz",
+        "git rebase -x 'git reset --hard' HEAD~1",
         # A separator ends the guard: what follows is its own call again.
         'git commit -m "x" && git reset --hard',
         'git commit -m "x"; git checkout -- a.txt',
@@ -441,8 +403,13 @@ def test_a_verb_inside_an_inert_subcommands_arguments_is_left_alone(
 def test_a_subcommand_that_runs_its_argument_is_still_refused(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
-    """The exceptions the allowlist must not swallow. The first three were each
-    run for real and observed to revert the tree."""
+    """The exceptions the allowlist must not swallow.
+
+    The first four were each run for real and observed to destroy content. The
+    fixture matters for `rebase -x`: an unstaged change makes rebase refuse to
+    start, so it was run on a clean tracked tree, where `git rebase -x
+    'git clean -fd' HEAD~1` exits 0 and takes an untracked file with it.
+    """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
 
@@ -1215,8 +1182,7 @@ def test_a_cwd_in_no_repository_has_nothing_to_lose(
 ) -> None:
     """A covered verb outside any repository destroys nothing, so it is allowed.
 
-    This assertion is the reverse of the one it replaces, which asserted a deny
-    and recorded no reason for it. Three things decide it:
+    Three things decide it:
 
     git resolves a repository by walking UP from the directory it runs in, and
     when that walk finds none it exits without touching a file. `in_repository`
@@ -2855,9 +2821,7 @@ def test_an_abbreviated_orphan_is_read_as_orphan(
 
     This is the only thing that exercises `abbreviates`. `--orphan` is kept out
     of `LONG_OPTS` on purpose, so the abbreviation is resolved at its one call
-    site rather than by the general expansion -- a site nothing else reaches,
-    and A1 cannot reach either, because its matrix is built from `git checkout
-    -h`, which prints full spellings only."""
+    site rather than by the general expansion."""
     dirty(repo)
     assert (
         deny_reason(HOOK, "git checkout -f --orph fresh", payload_cwd=repo) is not None
@@ -3293,3 +3257,29 @@ def test_a_capped_tree_mark_is_stable_over_what_it_did_not_reach(
     (tmp_path / "f5.txt").write_text("changed")
     (tmp_path / "f9.txt").write_text("new")
     assert h.tree_mark(tmp_path) == before
+
+
+def test_a_wrapper_is_peeled_only_where_the_option_still_runs_the_command() -> None:
+    """`unwrapped` has four exits and the shallow parse rests on all of them.
+
+    Peeling a wrapper is how a `cd` behind `builtin` / `command` is followed at
+    all. Peeling one that runs nothing invents a move: `command -v cd` prints
+    where the name resolves, so a caller told "this changed directory" measures
+    a tree the git call never runs in. An option in neither set is refused
+    rather than skipped, because skipping the wrong number of words leaves some
+    other word in the command position.
+    """
+    from block_git_discard.hook import Unmeasurable, unwrapped
+
+    assert unwrapped(["builtin", "cd", "x"]) == ["cd", "x"]
+    assert unwrapped(["command", "-p", "cd", "x"]) == ["cd", "x"]
+    assert unwrapped(["command", "builtin", "cd", "x"]) == ["cd", "x"]
+    assert unwrapped(["cd", "x"]) == ["cd", "x"]
+
+    for reporting in (["command", "-v", "cd"], ["command", "-V", "cd"]):
+        assert unwrapped(reporting) == reporting
+
+    assert unwrapped(["command", "-p"]) == ["command", "-p"]
+
+    with pytest.raises(Unmeasurable):
+        unwrapped(["command", "-z", "cd", "x"])

@@ -103,15 +103,22 @@
 # is indistinguishable from a shape it does not cover, and silence reaches the
 # caller as permission. Every parser gap has that one signature, whatever the
 # underlying mistake: a covered verb in the text with no recognized call to
-# account for it. `main` counts the two and refuses when they disagree.
+# account for it. `main` counts the two and refuses when the text names more
+# than the parse read.
 #
-# That test is why the shell parsing here stays shallow. A here-document body is
-# read as ordinary commands and a script that merely writes one is refused; so is
-# `echo git reset --hard >> log`, `man git checkout`, `docker run IMG git clean
-# -fdx`, and a commit message that spells `git <verb>` inside its quotes. Every
-# one of those is `git` beside a covered verb with no call read from it, which is
-# also the exact signature of a parse gap. Telling the two apart is precisely the
-# parsing this hook declines to attempt. The refusals cost an override token.
+# That test is why the shell parsing here stays shallow. `echo git reset --hard
+# >> log`, `man git checkout` and `docker run IMG git clean -fdx` are each `git`
+# beside a covered verb with no call read from them, which is also the exact
+# signature of a parse gap. Telling the two apart is precisely the parsing this
+# hook declines to attempt. The refusals cost an override token.
+#
+# Two neighbouring shapes are refused or allowed on other grounds, and reading
+# them as this count's work misstates both. A here-document body is read as
+# ordinary commands, so a script that merely writes a covered call HAS a call
+# read from it: what refuses it is the measurement, and only where the tree holds
+# something to lose. A covered verb inside the arguments of an inert subcommand
+# goes the other way -- `INERT_SUBCOMMANDS` keeps it out of the count, so a
+# commit message spelling one is left alone.
 #
 # The backstop's own floor: both halves of the call have to be WRITTEN in the
 # text. The name is read off the characters around it, so it need not be a word
@@ -672,8 +679,9 @@ def simple_commands(tokens: list[str]) -> list[tuple[str, list[str]]]:
 
     A here-document's body is NOT set apart. Newlines are separator tokens, so
     `cat > setup.sh <<'EOF'` / `git reset --hard` / `EOF` yields the middle line
-    as a simple command, and writing a script that only mentions a discard is
-    refused as though it performed one.
+    as a simple command, and a script that only mentions a discard is measured
+    as though it performed one -- so it is refused wherever the tree holds
+    something to lose, and allowed where it does not.
 
     That false positive is accepted rather than parsed away. Recognizing the
     body needs a delimiter rule, and every attempt at one here misread something
@@ -1297,9 +1305,8 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
         # rather than following it. `ls-files` does take the same `--exclude`, so
         # this is a cost decision, not an impossibility: forwarding it means
         # collecting a REPEATABLE option's values across `-e p`, `-epat` and
-        # `--exclude=pat`, which is the same value-spelling surface that has
-        # already produced two fail-opens here. Widening costs a wider list,
-        # which `over_wide` announces. Both spellings reach the test below:
+        # `--exclude=pat`. Widening costs a wider list, which `widened` marks and
+        # the refusal states. Both spellings reach the test below:
         # expand_flags strips an attached value, so `--exclude=pat` reads as
         # `--exclude`.
         if given(flags, "e", "--exclude"):
@@ -1447,10 +1454,10 @@ def measure(
         # rather than solving it. git prints `...` and keeps the totals line, so
         # the scale still reaches the reader.
         #
-        # Once the path list is itself capped, the stat is cut to its totals: the
-        # reason already printed those paths, and printing them again with a
-        # churn column beside them spends the budget twice on one list. `1` and
-        # not `0`, which git reads as no limit at all.
+        # Once the path list is itself capped, the stat is cut to one path line
+        # and the totals: the reason already printed those paths, and repeating
+        # all of them with a churn column beside them spends the budget twice on
+        # one list. `1` and not `0`, which git reads as no limit at all.
         stat_count = 1 if len(names) > AT_STAKE_LIMIT else AT_STAKE_LIMIT
         summary = git(
             cwd, "diff", *DIFF_FRAME, "--stat", f"--stat-count={stat_count}", *tail
@@ -1567,8 +1574,9 @@ def unwrapped(argv: list[str]) -> list[str]:
     A reporting option comes back UNPEELED, which the caller reads as "not a
     directory change" -- `command -v cd` says where the name resolves and runs
     nothing, so following it would read a move that does not happen. An option
-    outside the closed set is refused instead of skipped, because guessing which
-    ones take a value is the surface that has produced fail-opens here twice.
+    outside the closed set is refused instead of skipped: an option whose
+    value-taking is guessed wrong leaves the wrong word in the command position,
+    and the move is missed either way.
     """
     out = list(argv)
     while len(out) > 1 and out[0] in SHELL_WRAPPERS:
