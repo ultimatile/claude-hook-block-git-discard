@@ -1240,7 +1240,7 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
             # lose work. `-C` is force-CREATE: it moves a branch label and leaves
             # the tree alone, so reading it as force would deny every branch
             # creation on a dirty tree.
-            return ("worktree", [], False, False) if force else None
+            return narrowed("worktree", []) if force else None
         # The operand of these is the new branch's NAME, not a pathspec, so it
         # must not reach `paths_of` -- an unborn branch resolves as no ref, and
         # reading it as a path narrows the measurement to a file that does not
@@ -1257,7 +1257,7 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
             # reaches anyway; guessing wrong on the unforced side below would
             # answer "nothing at stake" for `--ou`, which is far more likely to
             # be `--ours` -- and `--ours` does write the worktree.
-            return ("worktree", [], False, False)
+            return narrowed("worktree", [])
         if names_a_branch:
             return None
         paths = paths_of(cwd, args)
@@ -1285,7 +1285,7 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
         return narrowed("worktree", paths) if paths else None
 
     if verb == "reset":
-        return ("worktree", [], False, False) if "--hard" in flags else None
+        return narrowed("worktree", []) if "--hard" in flags else None
 
     if verb == "clean":
         if given(flags, "n", "--dry-run"):
@@ -2282,9 +2282,8 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
 
 
 def main() -> None:
-    # Before a destructive shape is recognized, anything unexpected is allowed
-    # through: a payload this hook cannot even parse is not evidence of a
-    # discard, and refusing on it would refuse every command the harness sends.
+    # A payload this hook cannot parse is allowed through: it is not evidence of
+    # a discard, and refusing on it would refuse every command the harness sends.
     # After recognition the polarity flips: see the header.
     try:
         data = json.load(sys.stdin)
@@ -2292,9 +2291,18 @@ def main() -> None:
         if not command:
             return
         payload_cwd = data.get("cwd") or ""
-        commands = simple_commands(tokenize(prepared(command), comments=False))
     except Exception:  # noqa: BLE001
         return
+
+    # A COMMAND that cannot be tokenized is a different case, and returning here
+    # would be the fail-open the backstop below exists to close: the text is in
+    # hand, it may name a covered verb, and a parse that raised read no call from
+    # it -- which is the exact signature the count refuses on. So the failure
+    # leaves the command list empty and falls through to it.
+    try:
+        commands = simple_commands(tokenize(prepared(command), comments=False))
+    except Exception:  # noqa: BLE001
+        commands = []
 
     recognized = 0
     for idx, (_, argv) in enumerate(commands):

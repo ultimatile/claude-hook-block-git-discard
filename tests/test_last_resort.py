@@ -16,6 +16,7 @@ non-blocking error and the command then runs.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,6 +35,12 @@ BREAK_MENTIONS = """
 def boom(*a, **k):
     raise RuntimeError("injected: backstop count")
 h.mentions = boom
+"""
+
+BREAK_TOKENIZE = """
+def boom(*a, **k):
+    raise RuntimeError("injected: tokenizer")
+h.tokenize = boom
 """
 
 BREAK_EXC_STR = """
@@ -113,3 +120,32 @@ def test_an_exception_that_cannot_be_rendered_still_refuses(
     reason = decision(out)
     assert reason is not None
     assert "could not determine what is at stake" in reason, reason
+
+
+def test_a_command_that_cannot_be_tokenized_reaches_the_backstop(
+    dirty_repo: Path,
+) -> None:
+    """The tokenizer runs before anything is recognized, and what is unrecognized
+    is allowed -- which is right for a payload this hook cannot parse and wrong
+    for a command it cannot tokenize. The text is in hand and names a covered
+    verb; a parse that raised read no call from it, which is the signature the
+    backstop refuses on. Returning instead would skip the backstop and let the
+    discard run.
+    """
+    code, out = run_broken(BREAK_TOKENIZE, "git reset --hard", dirty_repo)
+    assert code == 0, out
+    assert decision(out) is not None, "a covered verb was allowed after a parse fault"
+
+
+def test_a_payload_that_cannot_be_parsed_is_still_allowed() -> None:
+    """The other half of the same boundary, and it must not move: refusing on a
+    payload this hook cannot read refuses every command the harness sends."""
+    proc = subprocess.run(
+        [sys.executable, "-c", "import block_git_discard.hook as h\nh.main()\n"],
+        input="not json at all",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", proc.stdout
