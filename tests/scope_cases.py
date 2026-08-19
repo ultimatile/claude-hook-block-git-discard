@@ -1,4 +1,4 @@
-"""The frozen enumeration the README's guarantee quantifies over, as code.
+"""The frozen readable-command scope, as code.
 
 Each cell is swept along one axis against a baseline; the axes are not crossed with
 each other. Axis J holds the pairs the code couples, so an interaction outside J is
@@ -165,10 +165,11 @@ def build(where: Path, kind: str) -> Fixture:
 # carries its reason here, beside the name, because an entry's reason is what makes
 # the exemption reviewable and there is nowhere else that holds one.
 #
-# An entry only does work when its cell destroys nothing: with a loss the rule
-# demands a deny outright, so the exemption never gates anything. Twelve entries sat
-# here in that state until `test_every_declared_over_refusal_is_needed` was written
-# to measure it, so the test is what keeps the list from filling up again.
+# An entry does work only when its cell destroys nothing AND the hook refuses it:
+# a loss makes the deny the rule's own answer, and an allow leaves no refusal to
+# exempt. Either way the entry is dead -- present, reviewable, and inert.
+# `test_every_declared_over_refusal_is_needed` asks the hook and then runs the
+# cell, so both halves are measured rather than assumed.
 DECLARED_OVER_REFUSALS = {
     "A: echoed verb": (
         "the text names a verb; reading it as a call is the parse this hook declines"
@@ -178,12 +179,6 @@ DECLARED_OVER_REFUSALS = {
     "A: docker wrapper": "the call runs in a container this hook cannot measure",
     "A: bisect reset": "a two-word subcommand whose second word is a covered verb",
     "A: status with a verb operand": "a covered verb sitting in an operand position",
-    "A: verb in a commit message body": (
-        "a message this hook's own refusal invites people to write"
-    ),
-    "C: unbalanced quote": (
-        "the tokenizer falls back to a whitespace split, so the argument list runs long"
-    ),
     "F: GIT_DIR assignment": (
         "the assignment moves the tree, so a measurement here describes another one"
     ),
@@ -257,8 +252,9 @@ CELLS: list[tuple[str, str, str, str]] = [
     ),
     ("C", "line continuation", "git reset \\\n--hard", "tracked"),
     # The tokenizer falls back to a whitespace split here, which glues separators to
-    # their neighbours and runs an argument list long -- fail-closed, and the shell
-    # rejects the line anyway, so nothing is destroyed and the refusal is declared.
+    # their neighbours and runs an argument list long. Measured: the long list
+    # narrows the query to nothing, the hook allows, and the shell rejects the line
+    # anyway -- so nothing is destroyed and no exemption is needed.
     ("C", "unbalanced quote", "git checkout -- 'a.txt", "tracked"),
     # D -- separators and control flow
     ("D", "semicolon", "true ; git reset --hard", "tracked"),

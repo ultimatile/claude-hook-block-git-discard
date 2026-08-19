@@ -16,12 +16,11 @@ loss would pass every cell while checking nothing.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
 import scope_cases
-from conftest import VENV_BIN, child_env
+from conftest import VENV_BIN, run_hook_process
 from scope_cases import CELLS, DECLARED_OVER_REFUSALS, build, execute, name_of
 
 HOOK = "block-git-discard"
@@ -32,22 +31,7 @@ def verdict(command: str, payload: Path) -> tuple[str, str]:
     script = VENV_BIN / HOOK
     if not script.exists():
         pytest.fail(f"{script} is missing -- run `uv sync`.")
-    proc = subprocess.run(
-        [str(script)],
-        input=json.dumps(
-            {
-                "hook_event_name": "PreToolUse",
-                "tool_name": "Bash",
-                "cwd": str(payload),
-                "tool_input": {"command": command},
-            }
-        ),
-        capture_output=True,
-        text=True,
-        check=False,
-        env=child_env(),
-        cwd=str(payload),
-    )
+    proc = run_hook_process([str(script)], command, payload, cwd=payload)
     if proc.returncode != 0:
         return "ERROR", proc.stderr[:300]
     if not proc.stdout.strip():
@@ -86,9 +70,12 @@ def test_the_harness_cannot_reach_outside_its_fixture(tmp_path: Path) -> None:
     `cd` with no operand goes to `$HOME`, and one cell is `cd && git reset --hard`.
     With the ambient value that hard reset runs in the home directory, and on a
     home-as-repository setup it discards the user's own uncommitted work -- running
-    the suite would cause the exact loss this project exists to prevent. This pins
-    the redirection that stops it, because nothing else about the suite would go
-    red if it were removed.
+    the suite would cause the exact loss this project exists to prevent.
+
+    Removing the redirection also turns `E: bare cd` and `H: unexpanded pathspec`
+    red, but as verdict mismatches: both then destroy nothing the fixture holds,
+    so they read as a hook that refused too much. This test names where the
+    command landed, which is the thing that actually went wrong.
     """
     fixture = build(tmp_path / "cell", "tracked")
     execute("cd && pwd > landed.txt", fixture.payload)
@@ -150,13 +137,15 @@ def test_the_hook_denies_exactly_what_destroys_content(
 
 
 def test_every_declared_over_refusal_is_needed(tmp_path: Path) -> None:
-    """An entry only does work when its cell destroys nothing.
+    """An entry does work only when its cell destroys nothing AND is refused.
 
-    With a loss the rule demands a deny outright, so the exemption never gates
-    anything and the entry is dead — present, reviewable, and inert. Twelve entries
-    were in that state before this test existed, which is how many a list checked
-    only for live names can accumulate: `test_every_declared_over_refusal_names_a_cell`
-    holds the name, and nothing held the exemption.
+    Both halves are load-bearing, and each fails in its own direction. With a
+    loss the rule demands a deny outright, so the exemption gates nothing. With
+    an allow there is no refusal to exempt, so it gates nothing either — and
+    that half is the one a list checked only for live names cannot see:
+    `test_every_declared_over_refusal_names_a_cell` holds the name, and
+    `test_the_hook_denies_exactly_what_destroys_content` passes a cell the hook
+    now allows, since allow is the correct answer when nothing is destroyed.
     """
     by_name = {name_of(axis, label): (t, k) for axis, label, t, k in CELLS}
     dead = []
@@ -166,12 +155,15 @@ def test_every_declared_over_refusal_is_needed(tmp_path: Path) -> None:
         command = template.replace("{other}", str(fixture.root / "other"))
         fixture.risk(fixture.payload / "activate", b"export X=1\n")
         fixture.risk(fixture.payload / "log.txt", b"nothing\n")
+        said, _ = verdict(command, fixture.payload)
         execute(command, fixture.payload)
         if fixture.lost():
             dead.append(f"{entry}: `{command}` destroys {fixture.lost()}")
+        elif said != "DENY":
+            dead.append(f"{entry}: `{command}` is not refused; the hook said {said}")
     assert not dead, (
-        "these entries exempt a refusal the rule already demands, so they gate "
-        "nothing:\n  " + "\n  ".join(dead)
+        "these entries exempt nothing, because the rule already demands the "
+        "answer the hook gives:\n  " + "\n  ".join(dead)
     )
 
 
