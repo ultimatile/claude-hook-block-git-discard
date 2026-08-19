@@ -20,12 +20,13 @@ script, and guards nothing.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, VENV_BIN, repo_holding_work, run_hook_process
 
 
 @pytest.fixture(scope="module")
@@ -62,21 +63,42 @@ def test_the_wheel_carries_the_package(wheel: Path) -> None:
         "block_git_discard/__init__.py",
         "block_git_discard/hook.py",
         "block_git_discard/shell_tokens.py",
+        "block_git_discard/__main__.py",
     ],
 )
-def test_the_wheel_carries_what_the_entry_point_needs(wheel: Path, module: str) -> None:
+def test_the_wheel_carries_what_the_entry_points_need(wheel: Path, module: str) -> None:
     """`block-git-discard = "block_git_discard:main"` reaches `main` through
     `__init__`, which imports it from `hook`, which imports `tokenize` and
-    `is_separator` from `shell_tokens`. A wheel missing ANY of the three resolves
-    the console script and then fails at import time -- a non-zero exit, which
-    the harness reports as a non-blocking error before running the command.
+    `is_separator` from `shell_tokens`. `python -m block_git_discard` is the
+    second door and reaches `main` through `__main__`. A wheel missing ANY of
+    them resolves its entry point and then fails at import time -- a non-zero
+    exit, which the harness reports as a non-blocking error before running the
+    command.
 
-    The whole import chain is listed rather than its first two links, because a
-    link left off this list is checked by nothing: the wheel is built from
-    `[tool.hatch.build.targets.wheel]`, and a packaging change that drops a
+    Every module either door needs is listed rather than the first links of one,
+    because a module left off this list is checked by nothing: the wheel is built
+    from `[tool.hatch.build.targets.wheel]`, and a packaging change that drops a
     module produces exactly the failure above with every other test still
     green."""
     assert module in zipfile.ZipFile(wheel).namelist()
+
+
+def test_the_module_entry_denies_a_discarding_command(tmp_path: Path) -> None:
+    """`python -m block_git_discard` is the door reached when the console script
+    is not on PATH, and it enters through `__main__` rather than through the
+    entry point every other test here exercises. Nothing else runs that module,
+    so a `__main__` that stops calling `main` prints nothing, exits 0, and lets
+    the command run -- the fail-open shape read as an allow."""
+    repo = repo_holding_work(tmp_path / "r")
+    proc = run_hook_process(
+        [str(VENV_BIN / "python"), "-m", "block_git_discard"],
+        "git reset --hard",
+        repo,
+        cwd=repo,
+    )
+    assert proc.returncode == 0, proc.stderr
+    decision = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"]
+    assert decision == "deny", proc.stdout
 
 
 def test_the_console_script_is_declared(wheel: Path) -> None:

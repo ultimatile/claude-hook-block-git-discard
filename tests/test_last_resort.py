@@ -16,11 +16,11 @@ non-blocking error and the command then runs.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import repo_holding_work, run_hook_process
 
 # Injected before `main()` runs. Each string is the body of the break, applied to
 # the imported module as `h`.
@@ -51,14 +51,7 @@ def run_broken(break_src: str, command: str, cwd: Path) -> tuple[int, str]:
     script = (
         "import sys\nimport block_git_discard.hook as h\n" + break_src + "h.main()\n"
     )
-    payload = json.dumps({"tool_input": {"command": command}, "cwd": str(cwd)})
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        input=payload,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = run_hook_process([sys.executable, "-c", script], command, cwd)
     return proc.returncode, proc.stdout
 
 
@@ -71,21 +64,7 @@ def decision(stdout: str) -> str | None:
 @pytest.fixture
 def dirty_repo(tmp_path: Path) -> Path:
     """A repository with a tracked change in it -- something to actually lose."""
-    r = tmp_path / "r"
-    r.mkdir()
-    for args in (
-        ("init", "-q"),
-        ("config", "user.email", "t@t"),
-        ("config", "user.name", "t"),
-    ):
-        subprocess.run(["git", *args], cwd=r, check=True, capture_output=True)
-    (r / "a.txt").write_text("v1\n")
-    subprocess.run(["git", "add", "-A"], cwd=r, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "c1"], cwd=r, check=True, capture_output=True
-    )
-    (r / "a.txt").write_text("DIRTY\n")
-    return r
+    return repo_holding_work(tmp_path / "r")
 
 
 def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
