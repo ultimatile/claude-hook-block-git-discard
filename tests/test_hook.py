@@ -3283,3 +3283,38 @@ def test_a_wrapper_is_peeled_only_where_the_option_still_runs_the_command() -> N
 
     with pytest.raises(Unmeasurable):
         unwrapped(["command", "-z", "cd", "x"])
+
+
+def test_a_reason_fragment_is_cut_to_something_a_transcript_can_carry() -> None:
+    """The unmeasured refusal interpolates whatever the failed query said, and
+    git answers an unusable invocation with its usage screen. Uncut, one deny
+    carries that screen into the caller's transcript and displaces the context
+    the caller needs to act on the refusal."""
+    from block_git_discard.hook import clipped
+
+    assert clipped("a  b\n c") == "a b c"
+    assert clipped("short") == "short"
+
+    long = clipped("x" * 500)
+    assert len(long) == 400
+    assert long.endswith("…")
+
+
+def test_the_query_helper_refuses_a_verb_that_is_not_read_only(tmp_path: Path) -> None:
+    """Every measurement runs through one subprocess call, and this is the guard
+    on it: a hook that exists to stop destructive commands must not become one.
+
+    `init` rather than a discarding verb on purpose. If the guard is removed this
+    test runs what it passed, so what it passes has to be harmless in a directory
+    the test owns.
+    """
+    from block_git_discard.hook import Unmeasurable, git
+
+    with pytest.raises(Unmeasurable):
+        git(str(tmp_path), "init", "-q", ".")
+    with pytest.raises(Unmeasurable):
+        git(str(tmp_path))
+
+    # And the guard is not simply rejecting everything.
+    repo = init(tmp_path / "r")
+    assert git(str(repo), "rev-parse", "--is-inside-work-tree").strip() == "true"

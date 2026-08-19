@@ -953,6 +953,20 @@ def flag_occurrences(flags: list[str]) -> list[str]:
     return out
 
 
+def option_tokens(opts: list[str]) -> list[str]:
+    """The option tokens in `opts`, with the `--` separator left out.
+
+    Here for the reason `given` and `forced` are here: `certainly_harmless` and
+    `stake_for` have to read the same flags, and a selection written twice is a
+    step the two can diverge on. `forced_twice` takes the same tokens for its own
+    count.
+
+    `--` is a separator and not an option, and it is dropped here rather than at
+    each caller for the same reason.
+    """
+    return [a for a in opts if a.startswith("-") and a != "--"]
+
+
 def certainly_harmless(argv: list[str]) -> bool:
     """True when a covered verb is in a form that cannot destroy anything.
 
@@ -969,7 +983,7 @@ def certainly_harmless(argv: list[str]) -> bool:
         return True
     verb, args = rest[0], rest[1:]
     opts, _ = split_at_ddash(args)
-    flags = expand_flags([a for a in opts if a.startswith("-") and a != "--"])
+    flags = expand_flags(option_tokens(opts))
 
     if given(flags, "p", "--patch"):
         return True
@@ -1080,7 +1094,7 @@ def forced_twice(opts: list[str]) -> bool:
     Takes the raw option tokens rather than a flag set, since a set cannot say
     whether force arrived once or twice.
     """
-    names = flag_occurrences([a for a in opts if a.startswith("-") and a != "--"])
+    names = flag_occurrences(option_tokens(opts))
     return sum(1 for n in names if n in ("f", "--force")) >= 2
 
 
@@ -1210,7 +1224,7 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
     # by expand_flags: `-patch.txt` yields `p`, which reads as `-p` and sends a
     # real discard down the "interactive, no collateral" branch below.
     opts, after_ddash = split_at_ddash(args)
-    flags = expand_flags([a for a in opts if a.startswith("-") and a != "--"])
+    flags = expand_flags(option_tokens(opts))
 
     # Interactive forms pick hunks, so they never take collateral.
     if given(flags, "p", "--patch"):
