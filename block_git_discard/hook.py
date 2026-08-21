@@ -74,6 +74,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 from .shell_tokens import is_separator, tokenize
 
@@ -955,17 +956,10 @@ def abbreviates(flags: set[str], full: str) -> bool:
 def given(flags: set[str], short: str, long: str) -> bool:
     """Whether a flag is present, under either spelling git accepts for it.
 
-    Here for the reason `forced` is here, and with the same two callers:
-    `certainly_harmless` reading a form as safe while `stake_for` reads it as a
-    discard lets the discard past without ever being measured. Spelling the pair
-    out at each site instead leaves the two sites free to disagree with nothing
-    about either making the disagreement visible -- `forced`'s own docstring
-    names that same hazard, on the same two callers.
-
-    Note the asymmetry with `forced`, which keeps its own body: `--force` is not
-    a single long spelling but a set, because `switch` says `--discard-changes`
-    for the same thing. A flag whose spellings are one-to-one belongs here; one
-    whose long form is a set of synonyms does not fit and is better named.
+    Separate from `forced`, which keeps its own body: `--force` is not a single
+    long spelling but a set, because `switch` says `--discard-changes` for the
+    same thing. A flag whose spellings are one-to-one belongs here; one whose
+    long form is a set of synonyms does not fit and is better named.
     """
     return short in flags or long in flags
 
@@ -1065,12 +1059,16 @@ def paths_of(cwd: str, rest: list[str]) -> list[str] | None:
     return [t for t in operands if not is_ref(cwd, t)] or None
 
 
-# What a covered invocation would destroy: the query kind, the pathspecs to
-# forward, whether the command's own narrowing had to be dropped, and whether it
-# reaches a directory git will not enumerate. The last one travels separately
-# from `kind` because it is a property of the flags, not of the query: two
-# invocations asking `ls-files` the very same question differ on it.
-Stake = tuple[str, list[str], bool, bool]
+class Stake(NamedTuple):
+    """What a covered invocation would destroy."""
+
+    kind: str
+    pathspecs: list[str]
+    narrowing_dropped: bool
+    # A directory holding its own `.git`, which git will not enumerate. Separate
+    # from `kind` because it is a property of the flags rather than of the query:
+    # two invocations asking `ls-files` the very same question differ on it.
+    reaches_nested: bool
 
 
 def widened(kind: str, reaches_nested: bool = False) -> Stake:
@@ -1082,18 +1080,15 @@ def widened(kind: str, reaches_nested: bool = False) -> Stake:
     reading an untouched file on the at-stake list has no way, from the list
     alone, to tell an over-wide report from a hook that is simply wrong.
     """
-    return (kind, [], True, reaches_nested)
+    return Stake(kind, [], True, reaches_nested)
 
 
 def narrowed(kind: str, paths: list[str], reaches_nested: bool = False) -> Stake:
     """A stake narrowed to the pathspecs the command carries, where it can be.
 
-    A pathspec holding a character the shell expands after this hook has seen it
-    cannot be forwarded to git as written, so the narrowing is dropped instead of
-    guessed at: over-detecting costs one extra round trip, forwarding a spelling
-    git reads differently costs the work itself. Globs are deliberately outside
-    `UNEXPANDED` -- git's own glob matches at least as much as the shell's, so
-    forwarding one over-detects rather than under-detects.
+    A pathspec `UNEXPANDED` matches is dropped rather than guessed at:
+    over-detecting costs one extra round trip, forwarding a spelling git reads
+    differently costs the work itself.
 
     Widening keeps `reaches_nested` as it arrived: the command still carries the
     pathspec that reaches such a directory, and the wider list is a superset of
@@ -1101,7 +1096,7 @@ def narrowed(kind: str, paths: list[str], reaches_nested: bool = False) -> Stake
     """
     if any(UNEXPANDED.search(p) for p in paths):
         return widened(kind, reaches_nested)
-    return (kind, paths, False, reaches_nested)
+    return Stake(kind, paths, False, reaches_nested)
 
 
 def stake_for(cwd: str, argv: list[str]) -> Stake | None:
@@ -1209,10 +1204,6 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
         # already refuses, and only the listing was hiding it.
         deep = "-deep" if "d" in flags else ""
         kind = f"untracked{ignored}{deep}"
-        # A directory holding its own `.git` is the one stake git will not
-        # enumerate, and `-ff` with either `-d` or a pathspec is what reaches it.
-        # Both halves are required: measured, `-ff` alone leaves it whole, and so
-        # does `-fd`.
         twice = forced_twice(opts)
         # `-e <pattern>` narrows what clean removes, and the report is widened
         # rather than following it. `ls-files` does take the same `--exclude`, so
@@ -1424,9 +1415,8 @@ def measure(
     for n in names:
         try:
             if n.endswith("/"):
-                # Only reachable when `reaches_nested` kept the entry, i.e. the
-                # stake is a directory git would not enumerate. Its content is
-                # still content, so the mark has to come from the filesystem.
+                # Its content is still content, so the mark has to come from
+                # the filesystem.
                 marks.append(f"{n}\0{tree_mark(root / n)}")
             else:
                 st = (root / n).stat()
