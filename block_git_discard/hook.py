@@ -2044,9 +2044,8 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
     """Refuse a covered shape that was not measured. False when already overridden.
 
     Raises for no input the payload can carry, and that is a guarantee rather
-    than an observation: this function is itself the refusal, so a raise escaping it
-    exits non-zero, which the harness reports as a non-blocking error before
-    running the command. The handler at the end holds it.
+    than an observation: this function is itself the refusal, so there is nothing
+    above it to catch what escapes. The handler at the end holds it.
 
     One raise source survives that handler and is left unhandled: `emit_deny`
     writes to stdout, and a stdout that has gone away raises `BrokenPipeError`
@@ -2120,14 +2119,11 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         )
         return True
     except BaseException:  # noqa: BLE001
-        # The net needs a net, and this is the net. Everywhere else a raise is
-        # caught and turned into a refusal; this function is the refusal, so a
-        # fault here had nothing above it and escaped to a non-zero exit -- which
-        # the harness reports as a non-blocking error before running the command.
-        # The hook's own worst outcome, reached through its own safety path. Not
-        # hypothetical: a lone surrogate in the command text raises inside the
-        # token hash, and with nothing here to catch it the `git reset --hard`
-        # it was refusing runs.
+        # The net needs a net, and this is the net: everywhere else a raise is
+        # caught and turned into a refusal, and this function is the refusal. Not
+        # hypothetical -- a lone surrogate in the command text raises inside the
+        # token hash, and with nothing here the `git reset --hard` it was refusing
+        # runs.
         #
         # A fixed string is the only refusal trustworthy here, because every
         # ingredient of a composed one is implicated: the command that would not
@@ -2174,10 +2170,9 @@ def main() -> None:
         recognized += 1
 
         # Everything from here on runs inside the handler, because from here on
-        # the shape is one of the covered ones: a raise would exit non-zero, which
-        # the harness reports as a non-blocking error and then runs the command.
-        # Recognition itself stays outside -- a failure there is "a shape we do
-        # not cover", which has no business denying.
+        # the shape is one of the covered ones. Recognition itself stays outside
+        # -- a failure there is "a shape we do not cover", which has no business
+        # denying.
         try:
             # Settle what can be settled without the repository. A dry run or an
             # interactive form denies nothing, and it denies nothing wherever it
