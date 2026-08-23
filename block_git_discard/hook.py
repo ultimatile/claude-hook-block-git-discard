@@ -2,8 +2,7 @@
 #
 # `git checkout -- <file>` restores the file from the index and takes every other
 # uncommitted change in that file with it, with no warning and nothing for
-# `git fsck` to find afterwards. That loss is what this guards, and it is why the
-# polarity below is unusual.
+# `git fsck` to find afterwards. That loss is what this guards.
 #
 # It does not pattern-match dangerous-looking commands: it runs the same
 # read-only query git would and denies on what that query reports.
@@ -13,23 +12,23 @@
 # have to grow with every such site and would go quiet on whichever one was added
 # without it.
 #
-# Scope is deliberately narrow, and the narrowing is a decision rather than an
-# omission: the five verbs in COVERED are the ones an agent actually types.
+# The five verbs in COVERED are the ones an agent actually types, which is the
+# whole of why the scope is that narrow.
 #
-# What "cannot be measured" means is narrow too, and that narrowing is the
-# invariant: this guards content that exists when the hook decides. A tree that
+# What "cannot be measured" means is narrow too: this guards content that exists
+# when the hook decides. A tree that
 # is there but hidden from the query is refused. A path that does not exist yet
 # is not hidden; it holds nothing of its own, and reading that as "unknown"
 # refuses a line while protecting nothing.
 #
-# "Of its own" is the whole qualification, and it was learned the hard way: git
+# "Of its own" is the qualification, and it was learned the hard way: git
 # resolves upwards, so a command run in a directory the same line creates still
 # reaches the repository above it. `mkdir -p d && cd d && git reset --hard`
 # destroyed an enclosing tree on the unqualified reading. The measurement
 # therefore falls back to the nearest directory that already exists.
 #
-# Fail-closed, which is the unusual choice and the deliberate one. A PreToolUse
-# hook that cannot make sense of its input normally lets the command through:
+# Fail-closed. A PreToolUse hook that cannot make sense of its input normally
+# lets the command through:
 # being wrong that way costs a redo. This one guards a loss that no redo reaches,
 # so it refuses instead. A false positive here costs one override token.
 #
@@ -41,15 +40,15 @@
 # turned a decided refusal into a discard. Failures before main() -- import,
 # syntax, an unusable interpreter -- cannot be caught from inside this file.
 #
-# The parse fails closed too, and that half is the harder one. A measurement
-# failure is loud: the hook knows which call it could not answer for. A
-# recognition failure is silent -- a covered verb this hook cannot read as a call
-# is indistinguishable from a shape it does not cover, and silence reaches the
-# caller as permission. Every parser gap has that one signature: a covered verb
-# in the text with no recognized call to account for it. `main` counts the two
-# and refuses when the text names more than the parse read. That count is why the
-# shell parsing here stays shallow, and telling a gap from a mention is precisely
-# the parsing this hook declines to attempt.
+# The parse fails closed too. A measurement failure is loud: the hook knows
+# which call it could not answer for. A recognition failure is silent -- a
+# covered verb this hook cannot read as a call is indistinguishable from a
+# shape it does not cover, and silence reaches the caller as permission. Every
+# parser gap has that one signature: a covered verb in the text with no
+# recognized call to account for it. `main` counts the two and refuses when the
+# text names more than the parse read. That count is why the shell parsing here
+# stays shallow, and telling a gap from a mention is precisely the parsing this
+# hook declines to attempt.
 #
 # The backstop's own floor: both halves of the call have to be written in the
 # text. The name is read off the characters around it, so it need not be a word
@@ -61,7 +60,7 @@
 # reads neither.
 #
 # So "never under-refuse" is not a guarantee it can make. What it holds to is
-# narrower and true: no shape it can read is under-refused, and a shape it cannot
+# narrower: no shape it can read is under-refused, and a shape it cannot
 # read is refused rather than passed.
 
 from __future__ import annotations
