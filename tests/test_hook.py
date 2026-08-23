@@ -66,7 +66,9 @@ def clean_repo(path: Path) -> Path:
 
 
 def test_clean_tree_is_not_interrupted(deny_reason: HookRunner, repo: Path) -> None:
-    """The whole point of measuring: a checkout with nothing to lose must pass."""
+    """A checkout with nothing to lose must pass, which is the whole point of
+    measuring.
+    """
     assert deny_reason(HOOK, "git checkout -- a.txt", payload_cwd=repo) is None
 
 
@@ -262,8 +264,8 @@ def test_a_verb_word_without_git_in_front_is_left_alone(
 def test_a_quoted_git_command_is_refused(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
-    """Quoted text is read as unreadable: the receiving command may execute it, and
-    that set has no boundary. The `grep` and the `echo` are the price.
+    """Quoted text is read as unreadable, because the receiving command may execute
+    it and that set has no boundary. The `grep` and the `echo` are the price.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
@@ -316,8 +318,8 @@ def test_a_verb_inside_an_inert_subcommands_arguments_is_left_alone(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
     """A `git <verb>` in the arguments of a call that does not run its arguments is
-    text. The allowlist is the safe direction: an omission costs a refusal, not a
-    hole.
+    text. The allowlist is the safe direction, an omission from it costing a refusal
+    and not a hole.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is None, command
@@ -405,7 +407,7 @@ def test_a_quoted_newline_does_not_end_the_inert_guard(
 def test_a_name_that_resolves_only_at_run_time_is_the_backstop_floor(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
-    """The limit of the guarantee: both halves of the call have to be written in the
+    """The limit of the guarantee. Both halves of the call have to be written in the
     text, and neither parser reads a name or a verb that resolves at run time.
 
     `$(echo git) reset --hard` is deliberately off the list, the word `git` being
@@ -458,7 +460,7 @@ def test_ignored_files_are_routed_to_the_stash_form_that_reaches_them(
 def test_a_dash_leading_pathspec_is_not_read_as_a_flag(
     deny_reason: HookRunner, repo: Path
 ) -> None:
-    """A filename after `--` is a pathspec, whatever it starts with: read as
+    """A filename after `--` is a pathspec, whatever it starts with. Read as
     options, `-patch.txt` splits per character and the `p` routes a real discard
     into the interactive branch.
     """
@@ -707,7 +709,7 @@ def test_suggestions_carry_the_frame_the_listed_paths_are_relative_to(
 def test_the_recovery_route_names_one_directory_for_every_step(
     deny_reason: HookRunner, nested: Path
 ) -> None:
-    """`-C` moves git's directory, not the shell's: offered as a frame it sends `>
+    """`-C` moves git's directory, not the shell's. Offered as a frame it sends `>
     keep.patch` wherever the caller stands, and `git apply` from there exits 0
     having restored nothing.
     """
@@ -1027,7 +1029,7 @@ def test_a_cwd_in_no_repository_has_nothing_to_lose(
     """`in_repository` asks git the same upward-walk question the real command will
     answer, from the same directory and environment.
 
-    The pair is pinned together: a `cd` into a directory that does not exist yet is
+    The pair is pinned together. A `cd` into a directory that does not exist yet is
     answered the same way, and it was their disagreement that was the defect.
     """
     plain = tmp_path / "plain"
@@ -1089,8 +1091,8 @@ def test_a_subshell_around_the_call_keeps_the_measurement(
     deny_reason: HookRunner, repo: Path
 ) -> None:
     """A separator is a run of punctuation, so a `(` arrives glued to the `&&`, and
-    read by equality the line is conditional-but-not-chained: the refusal survives,
-    but blind.
+    read by equality the line is conditional-but-not-chained, so the refusal
+    survives blind.
     """
     (repo / "sub").mkdir()
     (repo / "sub" / "c.txt").write_text("v1\n")
@@ -1508,7 +1510,7 @@ def test_a_measurement_of_the_enclosing_repository_announces_itself(
     deny_reason: HookRunner, repo: Path
 ) -> None:
     """The ancestor fallback measures a tree the command may not reach at all. The
-    caveat has to be the one about where this was measured: the command carries no
+    caveat has to be the one about where this was measured, the command carrying no
     pathspec.
     """
     dirty(repo)
@@ -1611,7 +1613,7 @@ def test_an_abbreviated_harmless_option_is_refused(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
     """Abbreviations expand against a union over all five verbs, so one can name a
-    flag the verb lacks: toward a destructive flag that adds a refusal, toward a
+    flag the verb lacks. Toward a destructive flag that adds a refusal, toward a
     harmless one it cancels the measurement.
 
     `git switch --p -f other` was read as `--patch` while git resolved `--p` to
@@ -1795,7 +1797,7 @@ def test_the_two_ways_of_running_it_over_there_answer_alike(
     deciding them differently is fail-open behind whichever spelling it does not
     look at.
 
-    The middle row is the one measured going wrong: with the directory created
+    The middle row is the one measured going wrong. With the directory created
     earlier on the same line, git resolves upwards into the enclosing repository and
     takes the worktree, which the `cd` spelling refused and the `-C` spelling did
     not. The first row is the price — a directory that will never exist cannot be
