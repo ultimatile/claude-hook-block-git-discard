@@ -1041,9 +1041,8 @@ def test_a_cwd_in_no_repository_has_nothing_to_lose(
 
 
 def test_a_conflicted_file_is_counted_once(deny_reason: HookRunner, repo: Path) -> None:
-    """`diff --name-only` names an unmerged path once per stage it compares, so one
-    conflicted file reads `2 file(s)` and reaches `AT_STAKE_LIMIT` at half the real
-    count.
+    """`diff --name-only` names an unmerged path once per stage it compares, so a
+    conflicted file arrives twice.
     """
     (repo / "f.txt").write_text("base\n")
     commit_all(repo, "base")
@@ -1321,7 +1320,7 @@ def test_a_cd_written_under_another_word_is_still_a_cd(
 def test_a_relocating_global_denies_even_from_outside_a_repository(
     deny_reason: HookRunner, tmp_path: Path
 ) -> None:
-    """"Nothing here to lose" is about here, and these globals move where that is.
+    """ "Nothing here to lose" is about here, and these globals move where that is.
     `stake_for` refuses an unrecognized global, but only when this check declines to
     answer first.
     """
@@ -1720,7 +1719,7 @@ def test_a_directory_this_line_creates_outside_a_repository_is_left_alone(
 def test_a_directory_this_line_creates_inside_a_repository_is_measured(
     deny_reason: HookRunner, repo: Path, creator: str
 ) -> None:
-    """"This path holds nothing" is about the path alone, and git resolves upwards.
+    """ "This path holds nothing" is about the path alone, and git resolves upwards.
 
     A command run in a directory this line creates still reaches the repository
     above it, so reading the new path alone lets `mkdir -p d && cd d && git reset
@@ -1900,7 +1899,7 @@ def test_a_dash_c_target_the_shell_still_resolves_is_refused(
 def test_a_cd_target_the_shell_still_expands_is_refused(
     deny_reason: HookRunner, repo: Path, target: str
 ) -> None:
-    """"Does not exist" is read as "holds nothing", and that reading is only about
+    """ "Does not exist" is read as "holds nothing", and that reading is only about
     the path as written: an unexpanded target never matches a directory, so the
     reading would be applied to a spelling the shell is about to turn into some
     other path.

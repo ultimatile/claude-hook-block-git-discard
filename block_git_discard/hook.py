@@ -271,8 +271,8 @@ def shell_path(raw: str, what: str) -> Path:
 
 
 class Unmeasurable(Exception):
-    """A recognized shape could not be measured. `main`'s handler turns it into a
-    deny.
+    """A recognized shape could not be measured. Uncaught, it reaches `main`'s
+    handler and becomes a deny.
     """
 
 
