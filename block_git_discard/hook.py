@@ -1358,21 +1358,15 @@ LAST_RESORT = (
     "A covered command takes content the object store never held, so one this "
     "hook could not measure is blocked.\n"
     "\n"
-    "No override token is offered. A token is derived from the command text, "
-    "and deriving one is among the steps that just failed -- so there is no "
-    "token to present, and re-running the line unchanged reaches this same "
-    "refusal.\n"
+    "The override token is derived from the command text, which is where the "
+    "failure was, so this one carries none.\n"
     "\n"
-    # Every route to this message refuses on the shape of the command, before and
-    # without consulting what the tree holds, so a clean tree is refused here just
-    # the same. What changes the outcome is giving the hook a command it can read.
-    "This refusal does not depend on what the tree holds, so committing or "
-    "stashing will not lift it. Re-issue the command in a form that can be "
-    "read instead: write the directory out rather than reaching it with "
-    "`popd`, a bare `cd`, or `cd -`; drop a `GIT_DIR` / `--work-tree` "
-    "override; split a compound line so the git call stands on its own. A "
-    "command the hook can follow gets a measured answer -- which names what "
-    "is at stake, and carries an override token if it still refuses."
+    "Committing or stashing lifts nothing: run this same line over a clean tree "
+    "and it is blocked the same way. What the hook can follow is a line that "
+    "names its own directory (`popd`, a bare `cd` and `cd -` are the spellings "
+    "it cannot), carries no `GIT_DIR` / `--work-tree` override, and leaves the "
+    "git call standing on its own. That answer names what is at stake, with a "
+    "token if it still blocks."
 )
 
 
