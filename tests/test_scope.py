@@ -1,12 +1,12 @@
-"""The acceptance condition, run rather than described.
+"""The acceptance condition, as cells that run.
 
-One test per cell of the enumeration in `scope_cases`, asserting the rule that
-file states. No expected verdict is written anywhere: each cell runs the command
-and reads the bytes back. It runs in the ordinary suite, since behind a marker
-whether the condition was checked becomes unanswerable again.
+One test per cell of the enumeration in `scope_cases`, which holds both the cells
+and the rule they are judged by. No expected verdict is written down; each cell
+runs its command for real and reads the bytes back. It runs in the ordinary suite,
+where nothing can skip it.
 
-The harness's own detector is tested first, a loss oracle that cannot report a
-loss passing every cell while checking nothing.
+The oracle is tested first, since one that cannot report a loss makes every cell
+pass while checking nothing.
 """
 
 from __future__ import annotations
@@ -99,9 +99,10 @@ def test_the_hook_denies_exactly_what_destroys_content(
 ) -> None:
     fixture = build(tmp_path / "cell", kind)
     command = template.replace("{other}", str(fixture.root / "other"))
-    # Registered rather than merely written: these are untracked files, so a `clean`
-    # that removes them has destroyed content, and leaving them out of the at-risk
-    # set turns a correct refusal into a reported over-refusal.
+    # Two cells name these files, and `risk` both writes them and puts them in the
+    # oracle. An untracked file a `clean` removes counts as destroyed only once it
+    # is registered, and unregistered it makes a correct deny read as one refusal
+    # too many.
     fixture.risk(fixture.payload / "activate", b"export X=1\n")
     fixture.risk(fixture.payload / "log.txt", b"nothing\n")
 
