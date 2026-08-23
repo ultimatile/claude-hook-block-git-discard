@@ -85,7 +85,7 @@ def test_the_last_resort_offers_no_token_it_could_not_derive(
     _, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
     reason = decision(out)
     assert reason is not None
-    assert "carries none" in reason, reason
+    assert "No override token" in reason, reason
     assert "ack:" not in reason, reason
 
 

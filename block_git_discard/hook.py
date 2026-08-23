@@ -1355,11 +1355,10 @@ LAST_RESORT = (
     "Blocked: this command can discard uncommitted work, and the hook failed "
     "while composing the refusal that would have said what is at stake.\n"
     "\n"
-    "A covered command takes content the object store never held, so one this "
-    "hook could not measure is blocked.\n"
+    "Unmeasured, it is blocked all the same, because what a covered command "
+    "takes has no copy in the object store.\n"
     "\n"
-    "The override token is derived from the command text, which is where the "
-    "failure was, so this one carries none.\n"
+    "No override token, because deriving one is part of what just failed.\n"
     "\n"
     "Committing or stashing lifts nothing: run this same line over a clean tree "
     "and it is blocked the same way. What the hook can follow is a line that "
@@ -1587,8 +1586,8 @@ def main() -> None:
                 command,
                 payload_cwd,
                 why,
-                "This shape can take content that no `git fsck` recovers, and "
-                "nothing measured what it would take here.",
+                "Blocked all the same, because what this shape takes has no copy "
+                "for `git fsck` to find.",
             ):
                 return
             continue
@@ -1609,9 +1608,9 @@ def main() -> None:
             "this command names a git verb that can discard uncommitted work, "
             "in a form the hook could not read as a call -- so what is at "
             "stake was never measured.",
-            "It may well discard nothing: a line that writes a script or echoes "
-            "a command reaches here too, because unread text is unread whatever "
-            "it turns out to say. What the text names is a verb that takes "
-            "content the object store never held, so the unread form is blocked "
-            "and the token below is the way through.",
+            "Blocked all the same, and it may well discard nothing: a line that "
+            "writes a script or echoes a command reaches here too, unread text "
+            "being unread whatever it turns out to say. The verb it names takes "
+            "content the object store never held, so the token below is the way "
+            "through.",
         )
