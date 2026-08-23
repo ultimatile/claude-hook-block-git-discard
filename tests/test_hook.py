@@ -1,5 +1,5 @@
 """Behaviour of the block-git-discard hook, against real repositories under
-`tmp_path` rather than a stubbed git.
+`tmp_path`: it decides by running git, so the fixtures run git too.
 
 The harness sends a working directory in the payload and also launches the hook
 somewhere; those are separate inputs here, the hook resolving paths from the
@@ -262,9 +262,8 @@ def test_a_verb_word_without_git_in_front_is_left_alone(
 def test_a_quoted_git_command_is_refused(
     deny_reason: HookRunner, repo: Path, command: str
 ) -> None:
-    """Quoted text is unreadable rather than inert: the receiving command may
-    execute it, and that set has no boundary. The `grep` and the `echo` are the
-    price.
+    """Quoted text is read as unreadable: the receiving command may execute it, and
+    that set has no boundary. The `grep` and the `echo` are the price.
     """
     dirty(repo)
     assert deny_reason(HOOK, command, payload_cwd=repo) is not None, command
@@ -475,9 +474,9 @@ def test_clean_narrows_to_its_pathspec(deny_reason: HookRunner, repo: Path) -> N
     (repo / "keepdir").mkdir()
     (repo / "keepdir" / "precious.txt").write_text("keep me\n")
     assert deny_reason(HOOK, "git clean -fd build", payload_cwd=repo) is None
-    # A .txt rather than a build-artifact extension: the user's global ignore
-    # file is in effect here, and `--exclude-standard` honours it, so an ignored
-    # name would make this pass for the wrong reason.
+    # A `.txt`, the user's global ignore file being in effect here and
+    # `--exclude-standard` honouring it: an ignored name would make this pass for
+    # the wrong reason.
     (repo / "build" / "junk.txt").write_text("junk\n")
     reason = deny_reason(HOOK, "git clean -fd build", payload_cwd=repo)
     assert reason is not None
@@ -957,8 +956,7 @@ def test_pathspec_narrows_to_the_named_file(
 
 
 def test_git_pathspec_magic_is_forwarded(deny_reason: HookRunner, nested: Path) -> None:
-    """The hook hands pathspecs to git rather than interpreting them, so exclude
-    magic has to keep working."""
+    """The hook hands pathspecs to git, so exclude magic keeps working."""
     (nested / "a.txt").write_text("CHANGED\n")
     assert (
         deny_reason(HOOK, "git checkout -- ':(exclude)a.txt' .", payload_cwd=nested)
@@ -971,7 +969,8 @@ def test_shell_expandable_pathspec_falls_back_to_the_whole_tree(
     deny_reason: HookRunner, nested: Path
 ) -> None:
     """`a{1,2}.txt` reaches the hook unexpanded, so it cannot be forwarded as
-    written; measuring everything over-detects rather than letting it through."""
+    written; measuring everything over-detects.
+    """
     (nested / "sub" / "s.txt").write_text("CHANGED\n")
     assert (
         deny_reason(HOOK, "git checkout -- 'a{1,2}.txt'", payload_cwd=nested)
@@ -1034,8 +1033,7 @@ def test_a_cwd_in_no_repository_has_nothing_to_lose(
     plain = tmp_path / "plain"
     plain.mkdir()
     assert deny_reason(HOOK, "git checkout -- a.txt", payload_cwd=plain) is None
-    # The pair is pinned together, because it is their disagreement that was the
-    # defect rather than either answer on its own.
+    # The pair is pinned together, their disagreement having been the defect.
     missing = tmp_path / "not-created-yet"
     assert deny_reason(HOOK, "git checkout -- a.txt", payload_cwd=missing) is None
 
@@ -1362,7 +1360,7 @@ def test_a_reporting_wrapper_runs_nothing_and_is_not_refused(
         HOOK, "command -v rg && git checkout -- a.txt", payload_cwd=repo
     )
     assert reason is not None
-    # Measured, not blind: the wrapper is stepped over rather than refused on.
+    # Measured, not blind: the wrapper is stepped over.
     assert "At stake" in reason, reason
 
 
@@ -1868,10 +1866,9 @@ def test_a_later_move_on_the_same_line_is_still_followed(
 def test_content_moved_in_by_the_same_line_is_not_protected(
     deny_reason: HookRunner, repo: Path, tmp_path: Path
 ) -> None:
-    """Pinned so this reads as a decision rather than a gap: the work does exist
-    when the hook decides, but at a path nothing here can connect to the one the
-    command names. Closing it needs the same unbounded enumeration the test above
-    refuses to build.
+    """Pinned as a decision: the work does exist when the hook decides, but at a
+    path nothing here can connect to the one the command names. Closing it needs the
+    same unbounded enumeration the test above refuses to build.
     """
     dirty(repo)
     command = f"mv {repo} moved && cd moved && git reset --hard"
@@ -1936,8 +1933,9 @@ def test_a_tilde_resolves_the_same_way_in_both_spellings(
 def test_a_tilde_cd_target_is_expanded_rather_than_refused(
     deny_reason: HookRunner, repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`~` is the one expansion this hook shares with the shell, so it resolves
-    instead of refusing — and having resolved it, it measures what is there."""
+    """`~` is the one expansion this hook shares with the shell, so it resolves and
+    then measures what is there.
+    """
     monkeypatch.setenv("HOME", str(repo.parent))
     dirty(repo)
     command = f"cd ~/{repo.name} && git reset --hard"
@@ -2062,7 +2060,8 @@ def test_a_redirection_target_is_not_read_as_a_pathspec(
     deny_reason: HookRunner, repo: Path
 ) -> None:
     """The narrowing has to survive too: reading `2` or the target as a pathspec
-    would collapse the measurement rather than merely widen it."""
+    would collapse the measurement.
+    """
     (repo / "junk").mkdir()
     (repo / "junk" / "j.txt").write_text("x\n")
     reason = deny_reason(HOOK, "git clean -fd 2>/dev/null", payload_cwd=repo)
@@ -2176,8 +2175,8 @@ def test_a_command_substitution_does_not_hide_the_verb(
 def test_one_unread_call_among_read_ones_still_refuses(
     deny_reason: HookRunner, repo: Path
 ) -> None:
-    """The backstop counts rather than matches: asking only "was anything
-    recognized?" lets a readable call vouch for an unreadable one beside it.
+    """The backstop counts: asking only "was anything recognized?" lets a readable
+    call vouch for an unreadable one beside it.
     """
     dirty(repo)
     command = "git checkout -- k.txt && sh -c 'git reset --hard'"
@@ -2188,7 +2187,8 @@ def test_one_unread_call_among_read_ones_still_refuses(
 
 def test_an_unread_call_can_be_overridden(deny_reason: HookRunner, repo: Path) -> None:
     """A refusal with no way through would strand a genuine intent, and this one
-    fires on shapes the hook cannot read rather than on shapes it judged."""
+    fires on shapes the hook cannot read.
+    """
     dirty(repo)
     command = "sh -c 'git reset --hard'"
     token = issue_token(deny_reason, repo, command)
@@ -2341,7 +2341,8 @@ def test_an_ordinary_env_assignment_does_not_refuse_a_clean_tree(
     deny_reason: HookRunner, repo: Path
 ) -> None:
     """The refusal is keyed to `GIT_`, so a locale or pager prefix still gets the
-    measured answer rather than an unmeasurable one."""
+    measured answer.
+    """
     assert deny_reason(HOOK, "LC_ALL=C git reset --hard", payload_cwd=repo) is None
 
 
@@ -2458,9 +2459,9 @@ CL = "cl" + "ean"
 # --- shapes measured against git, in both directions ------------------------
 #
 # Every command below was run for real in a throwaway repository, with the content
-# compared before and after, so each row asserts what git does rather than what
-# the shape looks like. The converse rows are here for the same reason: only
-# running a shape says whether it destroys anything.
+# compared before and after, so each row asserts what git actually did. The
+# converse rows are here for the same reason: only running a shape says whether it
+# destroys anything.
 
 
 def test_a_forced_orphan_checkout_is_measured(
@@ -2543,8 +2544,8 @@ def test_a_line_boundary_survives_an_escape_the_shell_reads_differently(
     `$'...'` read as an ordinary quote spans the newline, and an escaped `\\\\` read
     as a continuation joins the lines.
 
-    The bare-newline spellings of these same lines are refused, which makes this a
-    line-boundary bug rather than a guard one.
+    The bare-newline spellings of these same lines are refused, which places the bug
+    at the line boundary.
     """
     dirty(repo)
     untracked(repo)
@@ -2594,9 +2595,8 @@ def test_a_git_global_this_hook_does_not_know_is_unmeasurable(
     command = "git --icase-pathspecs checkout -- readme.MD"
     reason = deny_reason(HOOK, command, payload_cwd=repo)
     assert reason is not None, command
-    # The reason names the flag actually present. A message naming a fixed pair
-    # of options instead would be describing a command the reader did not run,
-    # and nothing about the refusal would tell them which token to look at.
+    # The reason names the flag actually present, so the reader knows which token
+    # to look at.
     assert "--icase-pathspecs" in reason, reason
 
 
@@ -2857,8 +2857,8 @@ def test_a_capped_tree_mark_is_stable_over_what_it_did_not_reach(
 def test_a_wrapper_is_peeled_only_where_the_option_still_runs_the_command() -> None:
     """`unwrapped` has four exits and the shallow parse rests on all of them:
     peeling one that runs nothing invents a move, and an option in neither set is
-    refused rather than skipped, skipping the wrong number of words leaving another
-    word in command position.
+    refused, since skipping the wrong number of words leaves another word in command
+    position.
     """
     from block_git_discard.hook import Unmeasurable, unwrapped
 

@@ -21,8 +21,8 @@ ACK_RE = re.compile(r"#\s*ack:([0-9a-f]{16})\b")
 
 
 # A backslash-escaped newline, which the shell joins before reading anything.
-# shlex leaves a bare newline instead, and `is_separator` reads that as a command
-# boundary: `git checkout \` + newline + `-- a.txt` arrives without its pathspec.
+# shlex leaves a bare newline, which `is_separator` reads as a command boundary:
+# `git checkout \` + newline + `-- a.txt` then arrives without its pathspec.
 CONTINUATION = re.compile(r"(?<!\\)((?:\\\\)*)\\\r?\n")
 
 # A command substitution, innermost first. `(` and `)` are separator tokens, so
@@ -33,15 +33,14 @@ SUBSTITUTION = re.compile(r"\$\([^()]*\)|`[^`]*`")
 
 # Characters that glue to a word without being part of it, stripped off the words
 # after a command name in `mentions`: `sh -c 'git reset'` presents the verb as
-# `reset'`. The name itself needs none of it -- `COMMAND_GIT` reads its neighbours
-# rather than reducing a word to it.
+# `reset'`. The name itself needs none of it: `COMMAND_GIT` reads the characters
+# on either side of it.
 CLINGING = "'\"()$`\\"
 
 # Characters that may appear inside a command name: `COMMAND_GIT` reads a `git` as
 # a name when neither neighbour is one, so `x=$(git`, `a$(git` and `<(git` are all
-# read. Spelled from what a name may hold rather than from the separators that end
-# one -- a missing name character costs a refusal, a missing separator costs the
-# call.
+# read. Spelled from what a name may hold, so an omission costs one refusal; a
+# list of the separators that end a name would let a missing one hide a call.
 NAME_CHAR = r"A-Za-z0-9_.+\-"
 
 # `/` differs on the two sides, which is the basename rule spelled as neighbours:
@@ -117,10 +116,11 @@ def strip_fd_prefixes(command: str) -> str:
     return "".join(out)
 
 
-# git subcommands that do not run a command string handed to them as an argument,
-# so a `git <verb>` inside one is text and not a call -- most visibly a commit
-# message. An allowlist, because the set that does run its argument is open at the
-# dangerous end, and every omission from this one is a refusal instead.
+# git subcommands that take their arguments as data, never as a command to run.
+# A `git <verb>` written inside one is text and not a call -- most visibly a commit
+# message. An allowlist, because the opposite set (`submodule foreach`,
+# `bisect run`, `rebase -x`) is open at the dangerous end, and an omission from
+# this list costs one refusal.
 #
 # Nothing joins the list on reasoning: each entry was run with `git <verb> --hard`
 # inside its argument and the worktree checked afterwards.
@@ -221,9 +221,9 @@ def strip_comments(command: str) -> str:
     prev = " "  # the start of the line counts as a word boundary
     skipping = False
     # `strict` states `mask_quoted`'s invariant -- one character out per character
-    # in -- so a break in it stops here rather than truncating the command. At run
-    # time this sits inside `main`'s pre-recognition handler, which allows, so the
-    # raise is visible under test and nowhere else.
+    # in -- so a break in it raises where `zip` would truncate the command
+    # silently. At run time this sits inside `main`'s pre-recognition handler,
+    # which allows, so the raise is visible under test and nowhere else.
     for original, seen in zip(command, masked, strict=True):
         if skipping:
             # A comment runs to the end of its line, and this hook is handed
@@ -243,15 +243,14 @@ def strip_comments(command: str) -> str:
     return "".join(out)
 
 
-# Subcommands the hook itself may run. Checked at the single subprocess entry
-# rather than asserted in a comment, so an edit reaching for a mutating query
-# fails loudly instead of quietly mutating the repository this hook protects.
+# Subcommands the hook itself may run, checked at the single subprocess entry, so
+# an edit reaching for a mutating query fails loudly.
 READ_ONLY = frozenset({"diff", "ls-files", "rev-parse"})
 
 # Characters the shell expands after this hook has seen the text, so a pathspec
 # containing one cannot be forwarded to git as written. Globs are excluded on
 # purpose: git's own glob matches at least as much as the shell's, so forwarding
-# one over-detects rather than under-detects.
+# one over-detects.
 UNEXPANDED = re.compile(r"[{}$`~]")
 
 # For a directory the glob exemption inverts, so it gets its own pattern. A
@@ -303,9 +302,9 @@ def git_line(cwd: str, *args: str) -> str:
     return git(cwd, *args).strip()
 
 
-# Commands that precede the real one without changing what it is. A wrapper's own
-# options are not stepped over, which needs per-wrapper knowledge: `sudo -u x git
-# reset --hard` is not recognized as a call and lands on the mention test instead.
+# Commands that precede the real one without changing what it is. Stepping over a
+# wrapper's own options needs per-wrapper knowledge, so `sudo -u x git reset
+# --hard` lands on the mention test.
 WRAPPERS = frozenset(
     {"env", "sudo", "doas", "nice", "nohup", "time", "command", "stdbuf"}
 )
@@ -317,8 +316,8 @@ def git_args(argv: list[str]) -> tuple[list[str], bool] | None:
     non-git.
 
     An assignment or a known wrapper is stepped over; anything else in command
-    position ends the search. The test is the `GIT_` prefix rather than the
-    variables that matter, because git's environment surface grows.
+    position ends the search. The test is the `GIT_` prefix, because git's
+    environment surface grows.
     """
     relocating_env = False
     for i, tok in enumerate(argv):
@@ -391,7 +390,7 @@ def ungrouped(command: tuple[str, list[str]]) -> tuple[str, list[str]]:
 #
 # Closed, and safe as closed: an option git does not know makes it exit 129 before
 # the subcommand runs. Measured against git 2.50, and `--exec-path` is deliberately
-# absent, printing the path and exiting rather than consuming what follows.
+# absent: bare, it prints the path and exits.
 GIT_VALUE_OPTS = frozenset(
     {
         "-C",
@@ -466,7 +465,7 @@ def split_at_ddash(rest: list[str]) -> tuple[list[str], list[str] | None]:
 
 
 # The long options this hook expands abbreviations for; `--orphan` is resolved at
-# its one call site instead. A subcommand's options go through parse-options,
+# its one call site. A subcommand's options go through parse-options,
 # which takes any unambiguous abbreviation, so `git reset --har` really does reset
 # and matching by equality alone reads it as carrying no flag.
 LONG_OPTS = frozenset(
@@ -563,9 +562,8 @@ def certainly_harmless(argv: list[str]) -> bool:
     if verb == "switch":
         return not forced(flags)
     if verb == "checkout":
-        # Full spelling only for `--orphan`, unlike the forced arm in
-        # `stake_for`: this side answers "measure nothing", so a wrong guess
-        # here drops the measurement rather than widening it.
+        # Full spelling only for `--orphan`: this side answers "measure nothing",
+        # so a wrong guess here drops the measurement.
         return not forced(flags) and (bool(flags & {"b", "B"}) or "--orphan" in flags)
     return False
 
@@ -685,8 +683,8 @@ class Stake(NamedTuple):
     pathspecs: list[str]
     narrowing_dropped: bool
     # A directory holding its own `.git`, which git will not enumerate. Separate
-    # from `kind` because it is a property of the flags rather than of the query:
-    # two invocations asking `ls-files` the very same question differ on it.
+    # from `kind` because it is a property of the flags: two invocations asking
+    # `ls-files` the very same question differ on it.
     reaches_nested: bool
 
 
@@ -699,7 +697,7 @@ def widened(kind: str, reaches_nested: bool = False) -> Stake:
 
 def narrowed(kind: str, paths: list[str], reaches_nested: bool = False) -> Stake:
     """A stake narrowed to the pathspecs the command carries, where it can be. A
-    pathspec `UNEXPANDED` matches is dropped rather than guessed at.
+    pathspec `UNEXPANDED` matches is dropped.
     """
     if any(UNEXPANDED.search(p) for p in paths):
         return widened(kind, reaches_nested)
@@ -895,11 +893,10 @@ def measure(
         )
         if not names:
             return [], "", ""
-        # `--stat-count` because the summary is per-file too, and capping only the
-        # path list moves the size problem rather than solving it. Past the cap it
-        # is cut to one path line and the totals, rather than repeating the list
-        # with a churn column beside it. `1` and not `0`, which git reads as no
-        # limit at all.
+        # `--stat-count` because the summary is per-file too, so a cap on the path
+        # list alone leaves this one growing. Past the cap it is cut to one path
+        # line and the totals, the reason having printed those paths already. `1`,
+        # git reading `0` as no limit at all.
         stat_count = 1 if len(names) > AT_STAKE_LIMIT else AT_STAKE_LIMIT
         summary = git(
             cwd, "diff", *DIFF_FRAME, "--stat", f"--stat-count={stat_count}", *tail
@@ -982,9 +979,9 @@ SHELL_WRAPPERS = ("builtin", "command")
 # file is not followed; that is the cost.
 RUNS_TEXT = ("eval",)
 
-# `command`'s options are a closed set, which is what makes them safe to read
-# rather than refuse: POSIX gives it `-p`, `-v` and `-V`, and only `-p` still runs
-# the command. `builtin` takes none.
+# `command`'s options are a closed set, which is what makes them safe to read:
+# POSIX gives it `-p`, `-v` and `-V`, and only `-p` still runs the command.
+# `builtin` takes none.
 WRAPPER_OPTS_THAT_RUN = ("-p",)
 WRAPPER_OPTS_THAT_REPORT = ("-v", "-V")
 
@@ -993,8 +990,8 @@ def unwrapped(argv: list[str]) -> list[str]:
     """`argv` with any `builtin` / `command` prefix peeled off.
 
     A reporting option (`command -v cd`) comes back unpeeled, so the caller reads it
-    as no directory change; an option outside the closed set is refused rather than
-    skipped.
+    as no directory change; an option outside the closed set is refused, how many
+    words it takes being unknown.
     """
     out = list(argv)
     while len(out) > 1 and out[0] in SHELL_WRAPPERS:
@@ -1046,8 +1043,8 @@ def resolve_cwd(
 
     Applies the directory changes of the preceding simple commands. What lands
     somewhere this hook cannot follow — `popd`, a bare `cd`, a target only the shell
-    can expand — is refused rather than guessed at; `~` is expanded, this hook and
-    that shell sharing a home.
+    can expand — is refused; `~` is expanded, this hook and that shell sharing a
+    home.
 
     A target that does not exist yet holds nothing, so it is measured as nothing,
     and the separator decides whether the git call lands there or here.
@@ -1081,8 +1078,8 @@ def resolve_cwd(
         # that runs the git command is the one that ran the `cd`, while under
         # `test -d dist && cd dist; git reset --hard` both readings survive.
         #
-        # Substring rather than equality, a separator carrying every operator that
-        # ran together: `)&&` is one of these.
+        # Substring, a separator carrying every operator that ran together: `)&&`
+        # is one of these.
         conditional = "&&" in sep or "||" in sep
         # `only_and` for the same reason, and the two have to agree: read one by
         # substring and the other by equality, and a separator carrying a `(` is
@@ -1105,10 +1102,9 @@ def resolve_cwd(
                 # for a blind one over a move that cannot have reached the git call.
                 continue
             # The `cd` would be inside text this hook does not read, and moves the
-            # shell all the same. Unknown rather than unchanged is a refusal.
+            # shell all the same. An unknown directory is a refusal.
             #
-            # Placed after the skips above rather than at recognition, a form they
-            # would have stepped over not having moved anything.
+            # Placed after the skips above: a form they step over has moved nothing.
             raise Unmeasurable(
                 f"`{argv[0]}` runs text this hook cannot read, and a `cd` inside "
                 "it moves where the git command lands"
@@ -1122,8 +1118,8 @@ def resolve_cwd(
                 "this hook cannot follow"
             )
         # The absence test below answers about the path as written, so a target
-        # only the shell can resolve is refused instead: the miss would read as
-        # "nothing here" for a directory about to hold a whole repository.
+        # only the shell can resolve is refused: the miss would read as "nothing
+        # here" for a directory about to hold a whole repository.
         target = shell_path(targets[0], f"`{argv[0]}` target")
         moved = target if target.is_absolute() else (cwd / target).resolve()
         if moved.is_dir():
@@ -1172,9 +1168,8 @@ def stash_form(kind: str) -> str:
 
 
 # What each spelling is for, in the order a reader picks between them. Kept beside
-# `stash_form` rather than written into the messages, so that the mapping from
-# content to spelling stays one rule: picking wrong gets "No local changes to
-# save" and leaves the file where it was.
+# `stash_form`, so the mapping from content to spelling stays one rule: picking
+# wrong gets "No local changes to save" and leaves the file where it was.
 STASH_ROUTES = (
     ("worktree", "a tracked change"),
     ("untracked", "an untracked file, which a plain push refuses"),
@@ -1187,9 +1182,9 @@ def stash_routes() -> str:
     return ", ".join(f"`{stash_form(k)}` for {what}" for k, what in STASH_ROUTES)
 
 
-# The way back from a stash, as a complete clause rather than a bare predicate:
-# the sites do not share a sentence, so shared text that arrives already
-# grammatical cannot be spliced wrong. `stash_routes()` is the same pattern.
+# The way back from a stash, as a complete clause: the sites have their own
+# sentences, and shared text that arrives already grammatical cannot be spliced
+# wrong. `stash_routes()` is the same pattern.
 POP_BACK = "`git stash pop` brings them back, and keeps the entry if it cannot"
 
 
@@ -1265,9 +1260,9 @@ def build_reason(
         lines += ["", summary]
     if hunks:
         lines += ["", "Hunks:", *hunks]
-    # `cd <root>` rather than `-C <root>`: `-C` moves git's directory and not the
-    # shell's, so the patch route would write keep.patch wherever the caller stands
-    # while the patch body names root-relative paths.
+    # Every route runs from `cd <root>`. `-C` moves git's directory and not the
+    # shell's, so under it the patch route writes keep.patch wherever the caller
+    # stands while the patch body names root-relative paths.
     #
     # Neither route promises the restore succeeds, so what the message states is
     # that the copy outlives the failure. Without `EITHER` the pair reads as two
@@ -1425,8 +1420,8 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         why = clipped(why)
         # Where to run the listing. "The tree that command targets" fails exactly
         # where this branch bites: a `popd` returns to a directory only the shell's
-        # stack knows. So the message anchors on what is knowable, and drops the
-        # anchor rather than print it empty when the payload carried no directory.
+        # stack knows. So the message anchors on what is knowable, dropping the
+        # anchor when the payload carried no directory.
         where = (
             f"The shell was in {operand(cwd)} when this was checked; if the line "
             "moves from there (`cd`, `pushd`, `popd`, or a `GIT_DIR` / "
@@ -1442,9 +1437,9 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
             f"{posture}\n"
             "\n"
             + where
-            # The same spelling `listing_for` picks, taken from it rather than
-            # written out again. Widest kind, because this branch measured nothing
-            # and so cannot rule out an ignored file.
+            # The same spelling `listing_for` picks, taken from it. Widest kind,
+            # because this branch measured nothing and so cannot rule out an
+            # ignored file.
             + f"`{listing_for('untracked-all')}` and set aside anything worth "
             f"keeping: {stash_routes()}, each with `-- <path>...`.\n"
             "\n"
@@ -1582,8 +1577,8 @@ def main() -> None:
             # identical refusal.
             #
             # Interpolating `exc` runs an arbitrary `__str__`, and the f-string is
-            # built as an argument, so it is evaluated in this frame rather than
-            # inside the refusal's own handler -- hence the try of its own.
+            # built as an argument, so it is evaluated in this frame, outside the
+            # refusal's own handler -- hence the try of its own.
             try:
                 why = (
                     "this command can discard uncommitted work, and the hook "
@@ -1606,8 +1601,8 @@ def main() -> None:
     # Where the parse fails closed. A covered verb it could not read is answered
     # nowhere above, and silence reaches the caller as permission; every parser gap
     # has the one signature, a covered verb in the text with no recognized call to
-    # account for it. It counts rather than matches, one unread call among read
-    # ones having to refuse too. A count that could not be taken is not zero.
+    # account for it. It counts, one unread call among read ones having to refuse
+    # too. A count that could not be taken is not zero.
     try:
         unread = mentions(command) > recognized
     except BaseException:  # noqa: BLE001
