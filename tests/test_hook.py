@@ -1839,8 +1839,7 @@ def test_running_it_over_there_from_outside_any_repository_is_left_alone(
 
     Outside any repository there is nothing above for git to resolve up into, so
     whatever this line puts at the target holds no content that existed when the
-    hook decided. Without this row the fallback's None branch is reached by no test
-    at all.
+    hook decided.
     """
     outside = tmp_path / "plain"
     outside.mkdir()

@@ -222,8 +222,7 @@ def strip_comments(command: str) -> str:
     skipping = False
     # `strict` states `mask_quoted`'s invariant -- one character out per character
     # in -- so a break in it raises where `zip` would truncate the command
-    # silently. At run time this sits inside `main`'s pre-recognition handler,
-    # which allows, so the raise is visible under test and nowhere else.
+    # silently.
     for original, seen in zip(command, masked, strict=True):
         if skipping:
             # A comment runs to the end of its line, and this hook is handed
