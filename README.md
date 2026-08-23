@@ -47,6 +47,11 @@ The override token is bound to the command and to the content at risk. Changing
 either invalidates it. Re-spacing the same command does not, so the token still
 matches wherever on the line you append it.
 
+What "the content" means differs by kind. For a tracked change it is the patch.
+For untracked and ignored content it is each file's size and modification time,
+which a same-length replacement that preserves the timestamp leaves unchanged
+([issue #10](https://github.com/ultimatile/claude-hook-block-git-discard/issues/10)).
+
 ## Scope
 
 The hook covers destructive forms of these Git commands:
@@ -84,7 +89,8 @@ Known gaps include:
 - `git reset --hard <commit>`, which overwrites an untracked file the named commit tracks ([issue #4](https://github.com/ultimatile/claude-hook-block-git-discard/issues/4));
 - a `cd` placed behind a shell keyword — `then`, `else`, `do`, `time` — which the directory walk steps over, measuring the tree the command started in rather than the one it moves to ([issue #5](https://github.com/ultimatile/claude-hook-block-git-discard/issues/5));
 - a subshell closed immediately before a redirection, as in `(cd d)>/dev/null`, whose close is dropped with the redirection and so never ends the subshell ([issue #6](https://github.com/ultimatile/claude-hook-block-git-discard/issues/6));
-- `GIT_DIR` put into the environment by `export` rather than as an inline prefix, which the inline spelling's refusal does not reach ([issue #7](https://github.com/ultimatile/claude-hook-block-git-discard/issues/7)).
+- `GIT_DIR` put into the environment by `export` rather than as an inline prefix, which the inline spelling's refusal does not reach ([issue #7](https://github.com/ultimatile/claude-hook-block-git-discard/issues/7));
+- a behaviour-affecting `git -c <key>=<value>`, which reaches the command but not the measurement, so `-c core.excludesFile=/dev/null clean -fd` deletes a file the measurement never listed ([issue #8](https://github.com/ultimatile/claude-hook-block-git-discard/issues/8)).
 
 The parser fails closed. If covered Git syntax appears but cannot be assigned to
 a command the parser understands, the hook denies it. This can produce false
@@ -96,6 +102,10 @@ man git checkout
 git bisect reset
 git status --short reset
 ```
+
+Measurement produces one of its own: a submodule whose worktree is dirty is
+reported by the parent's `git diff`, so a plain `git reset --hard` is denied over
+content that reset does not reach ([issue #9](https://github.com/ultimatile/claude-hook-block-git-discard/issues/9)).
 
 Such commands can be continued with the generated override token. The complete
 readable-command scope is tested in
