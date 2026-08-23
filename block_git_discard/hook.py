@@ -321,11 +321,9 @@ def mentions(command: str) -> int:
     masks the substitution away and recognizes nothing there either.
 
     A `git` in the arguments of a call that does not run its arguments is
-    skipped: see `INERT_SUBCOMMANDS`. That is the only position a covered verb
-    goes uncounted in. Everywhere else the look-ahead below counts one anywhere
-    before the next separator, an option's value included, so `git diff -S clean`
-    and `git blame -L 1,2 reset` are refused while `git log -S clean` is not --
-    measured, and the difference is `log` being inert.
+    skipped: see `INERT_SUBCOMMANDS`. Measured: `git diff -S clean` and
+    `git blame -L 1,2 reset` are refused, `git log -S clean` is not, and the
+    difference is `log` being inert.
     """
     found = 0
     # line by line, because a newline ends a command as surely as a `;` does and,
