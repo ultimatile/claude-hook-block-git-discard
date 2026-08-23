@@ -7,15 +7,11 @@ the `block-git-discard` console script, because the entry point is declared in
 metadata rather than discovered from code. The script then raises
 `ModuleNotFoundError` on every invocation and exits non-zero.
 
-For this project that chain ends somewhere worse than a broken tool. A
-PreToolUse hook that exits non-zero is reported by the harness as a non-blocking
-error and the command runs anyway, so an install that looks clean at every step
-produces a guard that is silently not guarding -- the exact outcome the hook
-exists to prevent, arrived at through its own packaging.
-
-Nothing about that outcome announces itself: a tree carrying this
-`pyproject.toml` without the package it declares installs, resolves its console
-script, and guards nothing.
+For this project that chain ends somewhere worse than a broken tool: a PreToolUse
+hook that exits non-zero is reported by the harness as a non-blocking error and
+the command runs anyway. Nothing about that announces itself -- a tree carrying
+this `pyproject.toml` without the package it declares installs, resolves its
+console script, and guards nothing.
 """
 
 from __future__ import annotations
@@ -68,27 +64,23 @@ def test_the_wheel_carries_the_package(wheel: Path) -> None:
 )
 def test_the_wheel_carries_what_the_entry_points_need(wheel: Path, module: str) -> None:
     """`block-git-discard = "block_git_discard:main"` reaches `main` through
-    `__init__`, which imports it from `hook`, which imports `tokenize` and
-    `is_separator` from `shell_tokens`. `python -m block_git_discard` is the
-    second door and reaches `main` through `__main__`. A wheel missing any of
-    them resolves its entry point and then fails at import time -- a non-zero
-    exit, which the harness reports as a non-blocking error before running the
-    command.
+    `__init__`, which imports it from `hook`, which imports from `shell_tokens`.
+    `python -m block_git_discard` is the second door and reaches `main` through
+    `__main__`. A wheel missing any of them resolves its entry point and then fails
+    at import time.
 
     Every module either door needs is listed rather than the first links of one,
-    because a module left off this list is checked by nothing: the wheel is built
-    from `[tool.hatch.build.targets.wheel]`, and a packaging change that drops a
-    module produces exactly the failure above with every other test still
-    green."""
+    because a module left off this list is checked by nothing.
+    """
     assert module in zipfile.ZipFile(wheel).namelist()
 
 
 def test_the_module_entry_denies_a_discarding_command(tmp_path: Path) -> None:
-    """`python -m block_git_discard` is the door reached when the console script
-    is not on path, and it enters through `__main__` rather than through the
-    entry point every other test here exercises. Nothing else runs that module,
-    so a `__main__` that stops calling `main` prints nothing, exits 0, and lets
-    the command run -- the fail-open shape read as an allow."""
+    """`python -m block_git_discard` is the door reached when the console script is
+    not on path, and it enters through `__main__` rather than the entry point every
+    other test here exercises. Nothing else runs that module, so a `__main__` that
+    stops calling `main` prints nothing and exits 0.
+    """
     repo = repo_holding_work(tmp_path / "r")
     proc = run_hook_process(
         [str(VENV_BIN / "python"), "-m", "block_git_discard"],

@@ -7,10 +7,8 @@ silently stops working.
 
 So the fault is injected: each test runs the real `main()` in a real subprocess
 with one internal broken on purpose, and asserts the process still exits 0 and
-still prints a deny. In-process these faults would surface as test errors;
-through a process boundary they surface as what they
-actually are, since a hook that exits non-zero is reported by the harness as a
-non-blocking error and the command then runs.
+still prints a deny. In-process these faults would surface as test errors; through
+a process boundary they surface as the fail-open they are.
 """
 
 from __future__ import annotations
@@ -76,10 +74,10 @@ def dirty_repo(tmp_path: Path) -> Path:
 
 def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
     """Deriving the override token happens inside the refusal, so a fault there
-    escapes the refusal itself unless something catches it there. A lone
-    surrogate in the command text is such a fault, and what it escapes into is
-    a non-zero exit, which the harness reports as a non-blocking error before
-    running the very command being refused."""
+    escapes the refusal itself unless something catches it there — into a non-zero
+    exit, which the harness reports as a non-blocking error before running the very
+    command being refused.
+    """
     code, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
     assert code == 0, out
     reason = decision(out)
@@ -125,12 +123,10 @@ def test_an_exception_that_cannot_be_rendered_still_refuses(
 def test_a_command_that_cannot_be_tokenized_reaches_the_backstop(
     dirty_repo: Path,
 ) -> None:
-    """The tokenizer runs before anything is recognized, and what is unrecognized
-    is allowed -- which is right for a payload this hook cannot parse and wrong
-    for a command it cannot tokenize. The text is in hand and names a covered
-    verb; a parse that raised read no call from it, which is the signature the
-    backstop refuses on. Returning instead would skip the backstop and let the
-    discard run.
+    """The tokenizer runs before anything is recognized, and what is unrecognized is
+    allowed — which is right for a payload this hook cannot parse and wrong for a
+    command it cannot tokenize. The text is in hand and names a covered verb, which
+    is the signature the backstop refuses on.
     """
     code, out = run_broken(BREAK_TOKENIZE, "git reset --hard", dirty_repo)
     assert code == 0, out

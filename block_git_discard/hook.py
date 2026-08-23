@@ -758,8 +758,10 @@ def flag_occurrences(flags: list[str]) -> list[str]:
 
 
 def option_tokens(opts: list[str]) -> list[str]:
-    """The option tokens in `opts`, with the `--` separator left out, so that
-    `certainly_harmless` and `stake_for` read the same flags.
+    """The option tokens in `opts`, with the `--` separator left out.
+
+    Shared so that `certainly_harmless` and `stake_for` cannot disagree on which
+    flags a command carries; `forced_twice` takes the same tokens for its count.
     """
     return [a for a in opts if a.startswith("-") and a != "--"]
 
@@ -835,7 +837,8 @@ def abbreviates(flags: set[str], full: str) -> bool:
 
     Subcommand options are parse-options, so git accepts any unambiguous prefix —
     `--orph` really does create an orphan branch. Callers use this only where
-    guessing wrong widens the measurement, never where it narrows one.
+    guessing wrong widens the measurement, never where it narrows one. Its one
+    caller resolves `--orphan`, which `LONG_OPTS` deliberately does not carry.
     """
     return any(f.startswith("--") and len(f) > 2 and full.startswith(f) for f in flags)
 

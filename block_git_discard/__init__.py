@@ -2,8 +2,7 @@
 uncommitted work.
 
 The decision is a measurement, not a pattern match: the hook runs the same
-read-only query git itself would, and denies on what that query reports. See
-`hook` for the reasoning behind the scope and the fail-closed posture.
+read-only query git itself would, and denies on what that query reports.
 """
 
 from __future__ import annotations

@@ -217,9 +217,8 @@ def test_staged_only_content_is_not_protected(
     (repo / "a.txt").write_text("STAGED\n")
     git(repo, "add", "a.txt")
     # `checkout -- <path>` restores from the index, not from HEAD, so this leaves
-    # the worktree matching the index with both ahead of HEAD. Restoring from
-    # HEAD instead would make worktree and index differ, which the hook does
-    # report — a different case from the one this test pins.
+    # the worktree matching the index with both ahead of HEAD. Restoring from HEAD
+    # instead would make worktree and index differ, which the hook does report.
     git(repo, "checkout", "--", "a.txt")
     assert git(repo, "diff", "--name-only") == "", "fixture did not reach the state"
     assert deny_reason(HOOK, "git reset --hard", payload_cwd=repo) is None
@@ -727,9 +726,8 @@ def test_two_covered_verbs_on_one_line_can_both_be_acked(
     the line denies forever.
     """
     # Two dirty files, so the narrowed verb and the whole-tree one measure
-    # different things and therefore issue different tokens. With only one dirty
-    # file both measurements coincide and a single token covers both — correct
-    # behaviour, but it would not exercise the accumulation this pins.
+    # different things and issue different tokens. With one, both measurements
+    # coincide and a single token covers them -- correct, but not this.
     dirty(repo, "a.txt")
     dirty(repo, "k.txt", "ALSO DIRTY\n")
     line = "git checkout -- a.txt && git reset --hard"
@@ -1934,11 +1932,10 @@ def test_the_two_ways_of_running_it_over_there_answer_alike(
         f"{situation}: cd={cd_reason!r} -C={dash_c_reason!r}"
     )
     assert cd_reason is not None, situation
-    # Not just that both refuse, but that they refuse about the same thing. The
-    # widening caveat is the part that differs between a directory measured
-    # exactly and one measured through its nearest existing ancestor, so two
-    # spellings that disagree on it are answering about different trees while a
-    # both-refused check stays green.
+    # Not just that both refuse, but that they refuse about the same thing: the
+    # widening caveat is what differs between a directory measured exactly and one
+    # measured through its nearest existing ancestor, so two spellings that
+    # disagree on it are answering about different trees.
     caveat = "nearest one that does was measured"
     assert (caveat in cd_reason) == (caveat in dash_c_reason), (
         f"{situation}: the two spellings disagree on how wide the answer is"
@@ -2446,9 +2443,9 @@ def test_the_at_stake_list_is_capped(
         return got
 
     # Boundedness is the contract, so it is measured as one: past the cap, four
-    # times the content must not make a longer message. Asserting a line count
-    # instead would pass on a message that still grew, just more slowly — and the
-    # diffstat is per-file too, so capping only the path list does exactly that.
+    # times the content must not make a longer message. A line-count assertion
+    # would pass on a message that still grew, just more slowly -- and the diffstat
+    # is per-file too, so capping only the path list does exactly that.
     small = len(reason_for(120).splitlines())
     large = len(reason_for(480).splitlines())
     assert small == large, (small, large)
@@ -2509,18 +2506,17 @@ def test_a_git_env_assignment_still_yields_to_a_harmless_form(
 
 # --- the refusal itself must not be able to fail ----------------------------
 #
-# Every test above asks what the hook decides. These ask whether it can say so.
-# A hook that exits non-zero is reported by the harness as a non-blocking error
-# and the command then runs, so a raise on the refusal path is not a crash --
-# it is a fail-open, and the one shape of fail-open the counting backstop above
-# cannot catch, because the count was already taken and already said "refuse".
+# Every test above asks what the hook decides. These ask whether it can say so. A
+# hook that exits non-zero is reported by the harness as a non-blocking error and
+# the command then runs, so a raise on the refusal path is a fail-open -- and the
+# one shape of it the counting backstop cannot catch, the count having already
+# said "refuse".
 
 # Command text a payload can legally carry that the refusal has to survive. The
 # lone surrogate is not hypothetical: JSON can spell it, no UTF-8 encoder will
-# take it, and .encode() inside the override-token hash raised on it -- after
-# the decision to deny, so the discard ran.
-#
-# These name a covered call, so the answer is settled: refuse.
+# take it, and .encode() inside the override-token hash raised on it -- after the
+# decision to deny, so the discard ran. These name a covered call, so the answer
+# is settled: refuse.
 HOSTILE_COVERED = [
     pytest.param("git reset --hard \ud800", id="lone-surrogate-operand"),
     pytest.param("git checkout -- \ud800", id="lone-surrogate-pathspec"),
@@ -2530,11 +2526,10 @@ HOSTILE_COVERED = [
     pytest.param("git reset --hard \x1b[2J\x07", id="control-characters"),
 ]
 
-# These do not, and not by omission: with the surrogate glued to the verb the
-# word is `\udcfeclean`, which is no more a
-# covered call than `git frobnicate` is -- git answers "not a git command" and
-# nothing is discarded. Allowing them is correct. What is still owed is that the
-# hook reach that answer instead of raising on the way to it.
+# These do not, and not by omission: with the surrogate glued to the verb the word
+# is `\udcfeclean`, which is no more a covered call than `git frobnicate` is, and
+# allowing them is correct. What is owed is that the hook reach that answer instead
+# of raising on the way to it.
 HOSTILE_UNCOVERED = [
     pytest.param("git \udcfeclean -fd", id="surrogate-glued-to-verb"),
     pytest.param("git \ud800 reset --hard", id="surrogate-in-subcommand-position"),
@@ -2623,12 +2618,10 @@ CL = "cl" + "ean"
 
 # --- shapes measured against git, in both directions ------------------------
 #
-# Every command below is one that was run for real in a throwaway repository,
-# with the content compared before and after, so each row asserts what git does
-# rather than what the shape looks like. Most rows are refusals: content that
-# becomes unrecoverable, which the hook must not let past. The converse rows are
-# here for the same reason -- a shape that destroys nothing must not be refused
-# either, and only running it says which of the two a shape is.
+# Every command below was run for real in a throwaway repository, with the content
+# compared before and after, so each row asserts what git does rather than what
+# the shape looks like. The converse rows are here for the same reason: only
+# running a shape says whether it destroys anything.
 
 
 def test_a_forced_orphan_checkout_is_measured(
@@ -2908,20 +2901,18 @@ def test_a_path_qualified_name_is_still_read(
         pytest.param(f"git-lfs {R} --hard", id="hyphenated-sibling"),
         pytest.param(f"gitk {R} --hard", id="prefix-of-another-name"),
         pytest.param(f"cat .gitignore && echo {R}", id="dotfile-name"),
-        # The rest of `NAME_CHAR`, one member per case. The docstring below names
-        # letter, digit, `_`, `.`, `+` and `-` as the class, and a member left
-        # unexercised is a member that could be dropped from it with every test
-        # still green -- which is how `mygit` becomes a covered call.
+        # The rest of `NAME_CHAR`, one member per case: a member left unexercised
+        # is one that could be dropped from the class with every test still green,
+        # which is how `mygit` becomes a covered call.
         pytest.param(f"git2 {R} --hard", id="digit-behind"),
         pytest.param(f"2git {R} --hard", id="digit-in-front"),
         pytest.param(f"git_x {R} --hard", id="underscore-behind"),
         pytest.param(f"x_git {R} --hard", id="underscore-in-front"),
         pytest.param(f"git+x {R} --hard", id="plus-behind"),
         pytest.param(f"x+git {R} --hard", id="plus-in-front"),
-        # A `/` behind the name makes the `git` a directory component, so the
-        # name is whatever follows it. This is the other half of the basename
-        # rule the path-qualified test above pins, and the two guards differ on
-        # `/` for exactly that reason.
+        # A `/` behind the name makes the `git` a directory component, so the name
+        # is whatever follows it -- the other half of the basename rule the
+        # path-qualified test above pins.
         pytest.param(f"git/lfs {R} --hard", id="git-as-a-directory"),
         pytest.param(f"a/git/b {R} --hard", id="git-as-an-inner-directory"),
     ],
@@ -3134,10 +3125,8 @@ def test_an_untracked_entry_that_cannot_be_stat_ed_still_fingerprints(
     reason = deny_reason(HOOK, "git clean -f", payload_cwd=repo)
     assert reason is not None
 
-    # A measured refusal. Every other refusal is a deny too, and an unmeasured
-    # one interpolates the exception -- whose text carries the very filename and
-    # whose message carries a token, so naming the file and finding an ack are
-    # both satisfied by the failure this is meant to exclude. "At stake" is
-    # printed only where the walk finished.
+    # A measured refusal. An unmeasured one interpolates the exception, whose text
+    # carries the very filename, so naming the file would be satisfied by the
+    # failure this excludes. "At stake" is printed only where the walk finished.
     assert "At stake" in reason, reason
     assert "dangling.link" in reason
