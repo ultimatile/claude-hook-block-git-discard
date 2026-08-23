@@ -1,14 +1,9 @@
 """Splitting a shell command line into simple commands.
 
-The Bash tool hands over a whole command line, which may chain several commands.
-Getting the boundary between them wrong makes this hook read the next command's
-flags as its target's.
-
-`shlex.split()` cannot draw that boundary: it splits on whitespace only, so
-`git checkout -- f; rm -rf dir` yields `'f;'` as one token with no `;` token at
-all, and a newline separator disappears as plain whitespace. Either way a walk
-that stops at a separator token never finds one. `tokenize()` emits separators as
-standalone tokens so that walk terminates.
+`shlex.split()` cannot draw the boundary: it splits on whitespace only, so
+`git checkout -- f; rm -rf dir` yields `'f;'` with no `;` token at all, and a
+newline separator disappears as plain whitespace. `tokenize()` emits separators
+as standalone tokens instead, so a walk that stops at one terminates.
 """
 
 from __future__ import annotations
@@ -28,21 +23,18 @@ PUNCT = "();<>|&\n"
 def tokenize(command: str, *, comments: bool = True) -> list[str]:
     """Split a shell command line, keeping separators as standalone tokens.
 
-    Quoting is honored, so a metacharacter inside an argument (`git commit -m
-    'a;b'`) stays part of its token. In posix mode an argument that is nothing but a
-    metacharacter (`git commit -m ';'`) is indistinguishable from a real separator
-    and ends that invocation's argument list early; the effect is a narrower scope,
-    never a wider one.
+    Quoting is honored, so a metacharacter inside an argument stays part of its
+    token. An argument that is nothing but a metacharacter (`git commit -m ';'`) is
+    indistinguishable from a real separator and ends that argument list early, which
+    narrows the scope rather than widening it.
 
-    `comments=False` stops shlex ending a token at `#`, whose default fires anywhere
-    in a word while the shell only starts a comment at a word's beginning: `git
-    checkout -- f#1.txt` truncates to `f`. A caller that turns this off owes its own
-    comment handling — see `strip_comments` in `hook`.
+    `comments=False` stops shlex ending a token at a `#` anywhere in a word, where
+    the shell opens a comment only at a word's beginning; a caller that turns it off
+    owes its own comment handling.
 
-    On unbalanced quotes this falls back to a whitespace split so a malformed
-    command still gets inspected rather than skipped. Separators stay glued to their
-    neighbours in that path, so an invocation's argument list can run long —
-    fail-closed for this hook's deny check.
+    On unbalanced quotes this falls back to a whitespace split, where separators
+    stay glued to their neighbours and an argument list can run long — fail-closed
+    for this hook.
     """
     lex = shlex.shlex(io.StringIO(command), posix=True, punctuation_chars=PUNCT)
     lex.whitespace_split = True
