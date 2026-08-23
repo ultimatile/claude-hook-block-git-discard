@@ -1355,8 +1355,8 @@ LAST_RESORT = (
     "Blocked: this command can discard uncommitted work, and the hook failed "
     "while composing the refusal that would have said what is at stake.\n"
     "\n"
-    "Denied rather than allowed, because the loss would be irreversible and "
-    "nothing here managed to measure it.\n"
+    "A covered command takes content the object store never held, so one this "
+    "hook could not measure is blocked.\n"
     "\n"
     "No override token is offered. A token is derived from the command text, "
     "and deriving one is among the steps that just failed -- so there is no "
@@ -1593,7 +1593,8 @@ def main() -> None:
                 command,
                 payload_cwd,
                 why,
-                "Denied rather than allowed, because the loss would be irreversible.",
+                "This shape can take content that no `git fsck` recovers, and "
+                "nothing measured what it would take here.",
             ):
                 return
             continue
@@ -1616,6 +1617,7 @@ def main() -> None:
             "stake was never measured.",
             "It may well discard nothing: a line that writes a script or echoes "
             "a command reaches here too, because unread text is unread whatever "
-            "it turns out to say. Refusing is the only answer that cannot be "
-            "wrong in the expensive direction.",
+            "it turns out to say. What the text names is a verb that takes "
+            "content the object store never held, so the unread form is blocked "
+            "and the token below is the way through.",
         )
