@@ -79,8 +79,12 @@ overwritten, and the hook does not stop it.
 Known gaps include:
 
 - `clean.requireForce=false` supplied through a Git config file;
-- narrowed `checkout` or `restore` operations that replace untracked or ignored files from a named tree ([issue #2](https://github.com/ultimatile/claude-hook-block-git-discard/issues/2)).
+- narrowed `checkout` or `restore` operations that replace untracked or ignored files from a named tree ([issue #2](https://github.com/ultimatile/claude-hook-block-git-discard/issues/2));
 - external diff commands and `textconv` drivers ([issue #3](https://github.com/ultimatile/claude-hook-block-git-discard/issues/3));
+- `git reset --hard <commit>`, which overwrites an untracked file the named commit tracks ([issue #4](https://github.com/ultimatile/claude-hook-block-git-discard/issues/4));
+- a `cd` placed behind a shell keyword — `then`, `else`, `do`, `time` — which the directory walk steps over, measuring the tree the command started in rather than the one it moves to ([issue #5](https://github.com/ultimatile/claude-hook-block-git-discard/issues/5));
+- a subshell closed immediately before a redirection, as in `(cd d)>/dev/null`, whose close is dropped with the redirection and so never ends the subshell ([issue #6](https://github.com/ultimatile/claude-hook-block-git-discard/issues/6));
+- `GIT_DIR` put into the environment by `export` rather than as an inline prefix, which the inline spelling's refusal does not reach ([issue #7](https://github.com/ultimatile/claude-hook-block-git-discard/issues/7)).
 
 The parser fails closed. If covered Git syntax appears but cannot be assigned to
 a command the parser understands, the hook denies it. This can produce false
