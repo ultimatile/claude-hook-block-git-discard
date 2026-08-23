@@ -1,11 +1,8 @@
 """Test support: run the hook the way the harness runs it.
 
-The hook is exercised as a subprocess rather than by importing `main` and calling
-it. Its central guarantee is that every path after recognition reaches `print()`
-and exits 0, and a raise breaks that guarantee only visibly through a process
-boundary: in-process it surfaces as a test error, as a subprocess it surfaces as
-the fail-open it is. So the subject under test is the installed console script,
-byte for byte what settings.json invokes.
+The subject is the installed console script, byte for byte what settings.json
+invokes. A raise on the refusal path is a fail-open only through a process
+boundary; in-process it would surface as an ordinary test error.
 """
 
 from __future__ import annotations
@@ -23,12 +20,9 @@ VENV_BIN = PROJECT_ROOT / ".venv" / "bin"
 
 
 def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """The environment the hook is launched with.
-
-    The console script's shebang is an absolute path into the project venv, so the
-    interpreter is fixed and path cannot redirect it. Path still matters for what
-    the hook shells out to — `git` — so the ambient environment is passed through
-    rather than trimmed.
+    """The environment the hook is launched with. The console script's shebang fixes
+    the interpreter; path still decides what `git` the hook shells out to, so the
+    ambient environment is passed through.
     """
     return {**os.environ, **(extra or {})}
 
@@ -43,13 +37,8 @@ def run_hook_process(
 ) -> subprocess.CompletedProcess[str]:
     """Run a hook process against `command` and hand back what it produced.
 
-    Four call sites start one: the console script, the module entry, the scope
-    enumeration, and a build with an internal deliberately broken. They differ in
-    argv and in what they assert, so the payload shape and the capture live here.
-
     `payload_cwd` is omitted from the payload when None rather than sent empty: a
-    payload carrying no working directory is one of the shapes the hook has to
-    answer for.
+    payload carrying no working directory is a shape the hook has to answer for.
     """
     payload: dict[str, object] = {
         "hook_event_name": "PreToolUse",
@@ -92,14 +81,10 @@ def _run_hook(
     """Run the hook against a Bash command; return its deny reason, or None if
     allowed.
 
-    `hook` names the console script under test, resolved in the project venv so the
-    suite tests this checkout rather than whatever is installed globally.
-
-    `cwd` sets the subprocess's directory; `payload_cwd` sets the `cwd` field of the
-    JSON payload. The harness supplies both and they normally agree, but a hook that
-    resolves paths from the payload has to keep working when they do not.
-    `payload_cwd` is keyword-only: both are path-typed, so a positional insertion
-    would silently rebind it.
+    `cwd` sets the subprocess's directory, `payload_cwd` the `cwd` field of the
+    payload: the harness supplies both, and a hook that resolves paths from the
+    payload has to keep working when they disagree. Keyword-only, both being
+    path-typed.
     """
     script = VENV_BIN / hook
     if not script.exists():
@@ -155,9 +140,8 @@ def dirty(repo: Path, name: str = "a.txt", text: str = "DIRTY\n") -> Path:
 
 
 def repo_holding_work(path: Path, text: str = "PRECIOUS\n") -> Path:
-    """A repository with an uncommitted change in it, built at `path`: a tree that
-    has something to lose, so that a refusal has a subject and an allow is a
-    measurable failure.
+    """A repository with an uncommitted change in it: a tree that has something to
+    lose, so that an allow is a measurable failure.
     """
     r = init(path)
     (r / "a.txt").write_text("v1\n")

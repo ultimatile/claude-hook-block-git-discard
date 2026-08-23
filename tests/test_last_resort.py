@@ -1,14 +1,9 @@
 """The handlers that turn an internal fault into a refusal instead of an exit.
 
-These paths cannot be reached by feeding the hook a bad command, because the one
-input known to reach them has been fixed -- which is exactly why they need tests
-of their own. A path reachable only by a bug nobody has found yet is a path that
-silently stops working.
-
-So the fault is injected: each test runs the real `main()` in a real subprocess
-with one internal broken on purpose, and asserts the process still exits 0 and
-still prints a deny. In-process these faults would surface as test errors; through
-a process boundary they surface as the fail-open they are.
+No bad command reaches these paths any more, which is why they need tests of
+their own: a path reachable only by a bug nobody has found yet stops working
+silently. So each test runs the real `main()` in a subprocess with one internal
+broken on purpose, and asserts it still exits 0 and still prints a deny.
 """
 
 from __future__ import annotations
@@ -74,9 +69,7 @@ def dirty_repo(tmp_path: Path) -> Path:
 
 def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
     """Deriving the override token happens inside the refusal, so a fault there
-    escapes the refusal itself unless something catches it there — into a non-zero
-    exit, which the harness reports as a non-blocking error before running the very
-    command being refused.
+    escapes into a non-zero exit unless something catches it there.
     """
     code, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
     assert code == 0, out
@@ -88,9 +81,7 @@ def test_a_broken_token_still_produces_a_refusal(dirty_repo: Path) -> None:
 def test_the_last_resort_offers_no_token_it_could_not_derive(
     dirty_repo: Path,
 ) -> None:
-    """An override token is a hash of the command, and the hash is what broke.
-    Printing one anyway would hand back a token that never matches, leaving a
-    refusal with an exit that does not work."""
+    """The hash is what broke, so a token printed anyway would never match."""
     _, out = run_broken(BREAK_TOKEN, "popd; git reset --hard", dirty_repo)
     reason = decision(out)
     assert reason is not None
@@ -99,9 +90,9 @@ def test_the_last_resort_offers_no_token_it_could_not_derive(
 
 
 def test_a_broken_backstop_count_refuses_rather_than_passes(dirty_repo: Path) -> None:
-    """The count is the last thing the hook does and nothing follows it, so a
-    fault there is silence -- which reaches the harness as consent. A count that
-    could not be taken is not a count of zero."""
+    """Nothing follows the count, so a fault there is silence, and silence is
+    consent.
+    """
     code, out = run_broken(BREAK_MENTIONS, "sh -c 'git reset --hard'", dirty_repo)
     assert code == 0, out
     assert decision(out) is not None, out
@@ -110,9 +101,9 @@ def test_a_broken_backstop_count_refuses_rather_than_passes(dirty_repo: Path) ->
 def test_an_exception_that_cannot_be_rendered_still_refuses(
     dirty_repo: Path,
 ) -> None:
-    """The unmeasured reason interpolates the failure, which runs an arbitrary
-    `__str__`. That happens while building the argument, so it is outside the
-    refusal's own handler and needs one of its own."""
+    """The unmeasured reason interpolates the failure, running an arbitrary
+    `__str__` while building the argument — outside the refusal's own handler.
+    """
     code, out = run_broken(BREAK_EXC_STR, "git reset --hard", dirty_repo)
     assert code == 0, out
     reason = decision(out)
@@ -123,10 +114,9 @@ def test_an_exception_that_cannot_be_rendered_still_refuses(
 def test_a_command_that_cannot_be_tokenized_reaches_the_backstop(
     dirty_repo: Path,
 ) -> None:
-    """The tokenizer runs before anything is recognized, and what is unrecognized is
-    allowed — which is right for a payload this hook cannot parse and wrong for a
-    command it cannot tokenize. The text is in hand and names a covered verb, which
-    is the signature the backstop refuses on.
+    """Unrecognized is allowed, which is right for a payload this hook cannot parse
+    and wrong for a command it cannot tokenize: the text is in hand and may name a
+    covered verb.
     """
     code, out = run_broken(BREAK_TOKENIZE, "git reset --hard", dirty_repo)
     assert code == 0, out

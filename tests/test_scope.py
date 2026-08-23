@@ -1,16 +1,12 @@
 """The acceptance condition, run rather than described.
 
-One test per cell of the enumeration in `scope_cases`, and the assertion is the rule
-that file states: the hook must deny exactly when executing the command destroys
-content that existed beforehand. No expected verdict is written anywhere; each cell
-runs the command and reads the bytes back.
+One test per cell of the enumeration in `scope_cases`, asserting the rule that
+file states. No expected verdict is written anywhere: each cell runs the command
+and reads the bytes back. It runs in the ordinary suite, since behind a marker
+whether the condition was checked becomes unanswerable again.
 
-This runs in the ordinary suite rather than behind a marker. Behind one, whether the
-acceptance condition was actually checked becomes unanswerable again, which is the
-failure this file exists to end.
-
-The harness's own detector is tested first, below. A loss oracle that cannot report a
-loss would pass every cell while checking nothing.
+The harness's own detector is tested first, a loss oracle that cannot report a
+loss passing every cell while checking nothing.
 """
 
 from __future__ import annotations
@@ -53,9 +49,9 @@ def test_the_loss_oracle_reports_a_removed_file(tmp_path: Path) -> None:
 
 
 def test_the_loss_oracle_reports_a_rewritten_file(tmp_path: Path) -> None:
-    """And so does one whose bytes are replaced -- a `checkout` restores rather
-    than deletes, so a detector watching only for absence would miss every
-    tracked-file case in the tables."""
+    """A `checkout` restores rather than deletes, so a detector watching only for
+    absence would miss every tracked-file case.
+    """
     fixture = build(tmp_path / "t", "tracked")
     assert fixture.lost() == []
     victim = next(iter(fixture.at_risk))
@@ -64,18 +60,12 @@ def test_the_loss_oracle_reports_a_rewritten_file(tmp_path: Path) -> None:
 
 
 def test_the_harness_cannot_reach_outside_its_fixture(tmp_path: Path) -> None:
-    """A cell is a real destructive command in a real shell, so where it lands is
-    part of the harness's contract rather than a detail.
+    """A bare `cd` goes to `$HOME`, and one cell is `cd && git reset --hard`: with
+    the ambient value, on a home-as-repository setup, running the suite would
+    discard the user's own uncommitted work.
 
-    `cd` with no operand goes to `$HOME`, and one cell is `cd && git reset --hard`.
-    With the ambient value that hard reset runs in the home directory, and on a
-    home-as-repository setup it discards the user's own uncommitted work -- running
-    the suite would cause the exact loss this project exists to prevent.
-
-    Removing the redirection also turns `E: bare cd` and `H: unexpanded pathspec`
-    red, but as verdict mismatches: both then destroy nothing the fixture holds,
-    so they read as a hook that refused too much. This test names where the
-    command landed, which is the thing that actually went wrong.
+    Removing the redirection also turns two cells red, but as verdict mismatches.
+    This one names where the command landed.
     """
     fixture = build(tmp_path / "cell", "tracked")
     execute("cd && pwd > landed.txt", fixture.payload)
@@ -137,15 +127,9 @@ def test_the_hook_denies_exactly_what_destroys_content(
 
 
 def test_every_declared_over_refusal_is_needed(tmp_path: Path) -> None:
-    """An entry does work only when its cell destroys nothing and is refused.
-
-    Each half fails in its own direction. With a loss the rule demands a deny
-    outright, so the exemption gates nothing. With
-    an allow there is no refusal to exempt, so it gates nothing either — and
-    that half is the one a list checked only for live names cannot see:
-    `test_every_declared_over_refusal_names_a_cell` holds the name, and
-    `test_the_hook_denies_exactly_what_destroys_content` passes a cell the hook
-    now allows, since allow is the correct answer when nothing is destroyed.
+    """An entry does work only when its cell destroys nothing and is refused. With a
+    loss the rule already demands a deny; with an allow there is no refusal to
+    exempt — and that half is what a list checked only for live names cannot see.
     """
     by_name = {name_of(axis, label): (t, k) for axis, label, t, k in CELLS}
     dead = []

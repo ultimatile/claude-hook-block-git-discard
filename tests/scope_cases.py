@@ -57,11 +57,10 @@ def git(cwd: Path, *args: str) -> str:
 class Fixture:
     """A tree, and exactly which bytes in it are unrecoverable if they move.
 
-    `at_risk` is the oracle. Registering a file is the claim that its current bytes
-    exist in no git object, so any change to them is a destruction -- which is why
-    every helper file a case needs is registered too rather than merely written: a
-    `clean` really does remove them, and an unregistered loss reads as no loss and
-    turns a correct refusal into a reported over-refusal.
+    `at_risk` is the oracle: registering a file claims its current bytes exist in no
+    git object. Every helper file a case needs is registered too, an unregistered
+    loss reading as no loss and turning a correct refusal into a reported
+    over-refusal.
     """
 
     root: Path
@@ -379,19 +378,11 @@ def name_of(axis: str, label: str) -> str:
 def execute(command: str, where: Path) -> None:
     """Run the command for real. Its effect on the fixture is the oracle.
 
-    `HOME` is pointed at the fixture, and that is not hygiene -- it is what keeps
-    this enumeration from destroying the machine it runs on. The cells are real
-    destructive commands run in a real shell, and one of them is `cd && git reset
-    --hard`: a bare `cd` goes to `$HOME`, so with the ambient value the hard reset
-    lands in the home directory. On a home-as-repository setup -- a dotfiles tree
-    checked out at `$HOME` is the common one -- `pytest` would then discard the
-    user's own uncommitted work, which is the exact loss this project exists to
-    prevent. Pointed at the fixture, the same cell lands in a throwaway tree.
-
-    `GIT_CONFIG_GLOBAL` goes with it: git resolves the global config under `HOME`,
-    so moving one without the other reads config from a path that now holds a
-    fixture. Silenced explicitly rather than left to follow `HOME`, so a cell's
-    answer cannot turn on whatever the machine's own git config happens to say.
+    `HOME` is pointed at the fixture because a bare `cd` goes there, and one cell is
+    `cd && git reset --hard`: on a home-as-repository setup the ambient value would
+    have `pytest` discard the user's own uncommitted work. `GIT_CONFIG_GLOBAL` goes
+    with it, git resolving the global config under `HOME`, and is silenced
+    explicitly so a cell's answer cannot turn on the machine's own config.
     """
     subprocess.run(
         command,

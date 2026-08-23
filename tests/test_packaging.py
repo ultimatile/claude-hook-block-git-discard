@@ -1,17 +1,11 @@
 """The distribution has to carry the hook, and nothing checks that by itself.
 
-`[tool.hatch.build.targets.wheel] packages` names a directory. When that
-directory is absent the build does not fail -- it succeeds and emits a wheel
-holding only metadata. Installing that wheel also succeeds, and it still creates
-the `block-git-discard` console script, because the entry point is declared in
-metadata rather than discovered from code. The script then raises
-`ModuleNotFoundError` on every invocation and exits non-zero.
-
-For this project that chain ends somewhere worse than a broken tool: a PreToolUse
-hook that exits non-zero is reported by the harness as a non-blocking error and
-the command runs anyway. Nothing about that announces itself -- a tree carrying
-this `pyproject.toml` without the package it declares installs, resolves its
-console script, and guards nothing.
+`[tool.hatch.build.targets.wheel] packages` names a directory. Absent, the build
+still succeeds and emits a wheel of pure metadata, which still installs and still
+creates the console script — the entry point being metadata rather than
+discovered from code. Every invocation then raises `ModuleNotFoundError` and exits
+non-zero, which the harness reports as a non-blocking error before running the
+command.
 """
 
 from __future__ import annotations
@@ -63,23 +57,18 @@ def test_the_wheel_carries_the_package(wheel: Path) -> None:
     ],
 )
 def test_the_wheel_carries_what_the_entry_points_need(wheel: Path, module: str) -> None:
-    """`block-git-discard = "block_git_discard:main"` reaches `main` through
-    `__init__`, which imports it from `hook`, which imports from `shell_tokens`.
-    `python -m block_git_discard` is the second door and reaches `main` through
-    `__main__`. A wheel missing any of them resolves its entry point and then fails
-    at import time.
+    """Both doors reach `main` through modules the wheel has to carry: the console
+    script through `__init__` and `hook`, `python -m` through `__main__`.
 
-    Every module either door needs is listed rather than the first links of one,
-    because a module left off this list is checked by nothing.
+    Every module either needs is listed rather than the first links of one, a module
+    left off being checked by nothing.
     """
     assert module in zipfile.ZipFile(wheel).namelist()
 
 
 def test_the_module_entry_denies_a_discarding_command(tmp_path: Path) -> None:
-    """`python -m block_git_discard` is the door reached when the console script is
-    not on path, and it enters through `__main__` rather than the entry point every
-    other test here exercises. Nothing else runs that module, so a `__main__` that
-    stops calling `main` prints nothing and exits 0.
+    """`python -m block_git_discard` enters through `__main__`, which nothing else
+    here runs: one that stops calling `main` prints nothing and exits 0.
     """
     repo = repo_holding_work(tmp_path / "r")
     proc = run_hook_process(
