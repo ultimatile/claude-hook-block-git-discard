@@ -1445,9 +1445,8 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         )
         return True
     except BaseException:  # noqa: BLE001
-        # The net needs a net: everywhere else a raise becomes a refusal, and this
-        # function is the refusal. A fixed string is the only one trustworthy here,
-        # every ingredient of a composed one being implicated.
+        # A constant, because composing a refusal interpolates the command text,
+        # the directory and the token -- which are what just failed.
         emit_deny(LAST_RESORT)
         return True
 
