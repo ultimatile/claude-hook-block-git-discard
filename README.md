@@ -96,7 +96,6 @@ Known gaps include:
 - a subshell closed immediately before a redirection, as in `(cd d)>/dev/null`, whose close is dropped with the redirection and so never ends the subshell ([issue #6](https://github.com/ultimatile/claude-hook-block-git-discard/issues/6));
 - `GIT_DIR` put into the environment by `export` rather than as an inline prefix, which the inline spelling's refusal does not reach ([issue #7](https://github.com/ultimatile/claude-hook-block-git-discard/issues/7));
 - a behaviour-affecting `git -c <key>=<value>`, which reaches the command but not the measurement, so `-c core.excludesFile=/dev/null clean -fd` deletes a file the measurement never listed ([issue #8](https://github.com/ultimatile/claude-hook-block-git-discard/issues/8));
-- `git clean -i`, which git lets proceed without `-f` and which the hook reads as carrying no force ([issue #12](https://github.com/ultimatile/claude-hook-block-git-discard/issues/12));
 - an assignment prefix in front of a directory change, as in `X=1 cd d`, which the directory walk steps over ([issue #5](https://github.com/ultimatile/claude-hook-block-git-discard/issues/5));
 - `pushd -n d`, which adds a directory to the stack without moving to it while the walk reads it as a move ([issue #13](https://github.com/ultimatile/claude-hook-block-git-discard/issues/13)).
 
@@ -109,7 +108,12 @@ echo git reset --hard >> notes.md
 man git checkout
 git bisect reset
 git status --short reset
+git clean -i
 ```
+
+`git clean -i` is on that list because `-i` makes git ignore
+`clean.requireForce`: whether the menu deletes turns on what answers it, and
+that comes from stdin rather than from the command text.
 
 Measurement produces one of its own: a submodule whose worktree is dirty is
 reported by the parent's `git diff`, so a plain `git reset --hard` is denied over

@@ -181,6 +181,9 @@ DECLARED_OVER_REFUSALS = {
     "F: GIT_DIR assignment": (
         "the assignment moves the tree, so a measurement here describes another one"
     ),
+    "G: interactive at eof": (
+        "whether the menu deletes turns on stdin, which the command text does not carry"
+    ),
     "H: pathspec from file": "the pathspecs live in a file this hook does not read",
 }
 
@@ -335,6 +338,13 @@ CELLS: list[tuple[str, str, str, str]] = [
     ("G", "nested with ffd", "git clean -ffd", "nested"),
     ("G", "nested with ff pathspec", "git clean -ff nested", "nested"),
     ("G", "exclude widens", "git clean -fd -e keep.txt", "untracked"),
+    # `-i` makes git ignore `clean.requireForce`, so it deletes with no `-f` on
+    # the line. The menu takes its answer from stdin, and the pipe supplies one;
+    # left at EOF the menu quits and the cell would have nothing to measure.
+    ("G", "interactive", "printf '1\\n' | git clean -id", "untracked"),
+    # Answered at EOF the menu quits, so this one destroys nothing and is
+    # refused all the same: stdin is not in the command text.
+    ("G", "interactive at eof", "git clean -id", "untracked"),
     # H -- which paths the measurement covers
     ("H", "after dashdash", "git checkout -- a.txt", "tracked"),
     ("H", "before dashdash", "git checkout a.txt", "tracked"),

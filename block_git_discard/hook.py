@@ -778,7 +778,14 @@ def stake_for(cwd: str, argv: list[str]) -> Stake | None:
     if verb == "clean":
         if given(flags, "n", "--dry-run"):
             return None
-        if not given(flags, "f", "--force") and not force_waived(argv):
+        if (
+            not given(flags, "f", "--force")
+            # `-i` makes git ignore `clean.requireForce`, so it deletes with no
+            # `-f` on the line. Whether it deletes turns on what the menu is
+            # answered with, which is stdin and not the command text.
+            and not given(flags, "i", "--interactive")
+            and not force_waived(argv)
+        ):
             # `argv`, not `rest`: the setting sits among git's own options, which
             # `strip_global_opts` has already peeled off by this point.
             return None
