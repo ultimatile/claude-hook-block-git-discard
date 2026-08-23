@@ -7,9 +7,8 @@
 # It does not pattern-match dangerous-looking commands: it runs the same
 # read-only query git would and denies on what that query reports. Where the
 # command's reach cannot be narrowed exactly, the report widens and the deny
-# follows the wider report. That is a rule and not a list -- a list would have to
-# grow with every such site and would go quiet on whichever one was added without
-# it.
+# follows the wider report -- a rule rather than a list, which would go quiet on
+# whichever site was added without it.
 #
 # The five verbs in COVERED are the ones an agent actually types, which is the
 # whole of why the scope is that narrow.
@@ -18,12 +17,8 @@
 # when the hook decides. A tree that is there but hidden from the query is
 # refused. A path that does not exist yet is not hidden; it holds nothing of its
 # own, and reading that as "unknown" refuses a line while protecting nothing.
-#
-# "Of its own" is the qualification, and it was learned the hard way: git resolves
-# upwards, so a command run in a directory the same line creates still reaches the
-# repository above it. `mkdir -p d && cd d && git reset --hard` destroyed an
-# enclosing tree on the unqualified reading. The measurement therefore falls back
-# to the nearest directory that already exists.
+# `nearest_existing` is where "of its own" is qualified, git resolving upwards out
+# of a directory the same line creates.
 #
 # Fail-closed. A PreToolUse hook that cannot make sense of its input normally lets
 # the command through: being wrong that way costs a redo. This one guards a loss
