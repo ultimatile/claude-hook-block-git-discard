@@ -1348,9 +1348,8 @@ def emit_deny(reason: str) -> None:
     )
 
 
-# The refusal of last resort, held as a constant because it interpolates
-# nothing: it is emitted exactly when composing a refusal out of the input is
-# what failed, so touching the input again is the one thing it must not do.
+# The refusal emitted when composing one out of the input is what failed. A
+# constant, the command text, the directory and the token being what failed.
 LAST_RESORT = (
     "Blocked: this command can discard uncommitted work, and the hook failed "
     "while composing the refusal that would have said what is at stake.\n"
@@ -1360,12 +1359,11 @@ LAST_RESORT = (
     "\n"
     "No override token, because deriving one is part of what just failed.\n"
     "\n"
-    "Committing or stashing lifts nothing: run this same line over a clean tree "
-    "and it is blocked the same way. What the hook can follow is a line that "
-    "names its own directory (`popd`, a bare `cd` and `cd -` are the spellings "
-    "it cannot), carries no `GIT_DIR` / `--work-tree` override, and leaves the "
-    "git call standing on its own. That answer names what is at stake, with a "
-    "token if it still blocks."
+    "Re-run it in a form the hook can read: name the directory in the line "
+    "(`popd`, a bare `cd` and `cd -` are the ones it cannot follow), drop any "
+    "`GIT_DIR` / `--work-tree` override, split a compound line so the git call "
+    "stands alone. That answer names what is at stake, and carries a token if "
+    "it still blocks."
 )
 
 
@@ -1445,8 +1443,6 @@ def deny_unmeasured(command: str, cwd: str, why: str, posture: str) -> bool:
         )
         return True
     except BaseException:  # noqa: BLE001
-        # A constant, because composing a refusal interpolates the command text,
-        # the directory and the token -- which are what just failed.
         emit_deny(LAST_RESORT)
         return True
 
