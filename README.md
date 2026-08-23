@@ -49,8 +49,13 @@ matches wherever on the line you append it.
 
 What "the content" means differs by kind. For a tracked change it is the patch.
 For untracked and ignored content it is each file's size and modification time,
-which a same-length replacement that preserves the timestamp leaves unchanged
+which a same-length replacement that preserves the timestamp leaves unchanged,
+and which a symlink contributes from its target rather than from itself
 ([issue #10](https://github.com/ultimatile/claude-hook-block-git-discard/issues/10)).
+
+Where nothing could be measured the token binds the command alone, with its
+whitespace flattened, so two commands that differ only inside a quoted word
+share one ([issue #11](https://github.com/ultimatile/claude-hook-block-git-discard/issues/11)).
 
 ## Scope
 
