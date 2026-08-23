@@ -138,6 +138,11 @@ NAME_CHAR = r"A-Za-z0-9_.+\-"
 COMMAND_GIT = re.compile(rf"(?<![{NAME_CHAR}])git(?![{NAME_CHAR}/])")
 
 # Characters that end the simple command an inert-subcommand guard belonged to.
+# The parentheses and the backtick are here for a different reason than `;&|`:
+# what is written inside a substitution or a subshell runs on its own, so
+# `git commit -am "$(git reset --hard)"` discards the tree before the commit it is
+# quoted into has begun.
+#
 # Spelled once because `mentions` reads it at two points -- clearing the guard,
 # and bounding the look-ahead -- and two copies drift.
 SEPARATORS = ";&|()`"
@@ -336,17 +341,11 @@ def mentions(command: str) -> int:
         previous = 0
         for candidate in COMMAND_GIT.finditer(line):
             start = candidate.start()
-            # A separator ends the call the guard belonged to. So does a
-            # substitution or a subshell, for a different reason: what is written
-            # inside one runs, so `git commit -am "$(git reset --hard)"` discards
-            # the tree before the commit it is quoted into has begun.
-            #
-            # The evidence is the span since the last candidate, because neither
-            # name need be a whole word. It runs to the end of this candidate's
-            # own token rather than to the name, so a separator sitting behind the
-            # name in the same word still clears the guard: `git log -1 git)`
-            # followed by a covered verb is two commands, and the `)` is the only
-            # thing that says so.
+            # The span searched runs from the last candidate to the end of
+            # this one's own token, not to the end of the name, because neither
+            # `git` need be a whole word: in `git log -1 git)` the `)` sits
+            # behind the second name inside the same token, and it is the only
+            # thing saying a covered verb after it belongs to another command.
             edge = WHITESPACE.search(line, start)
             through = edge.start() if edge else len(line)
             if any(ch in line[previous:through] for ch in SEPARATORS):
